@@ -7,21 +7,34 @@ Rust as a cross-language conformance check. Pure software: the ECUs are Zephyr
 `native_sim` processes on a Linux virtual CAN bus (`vcan`) inside a Docker dev
 container, so the whole network runs identically on any machine and in CI.
 
-> Status: **Phase 0 of 8** (toolchain and environment). See
+> Status: **Phase 1 of 8** (network definition and codec). See
 > [DESIGN.md](DESIGN.md) for every design decision and the phase plan.
 
-## What is here after Phase 0
+## What is here after Phase 1
 
+- `can/network.dbc` the network: sensor data (10 ms), battery status (100 ms),
+  controller command (20 ms), a heartbeat per ECU, an echo request/response
+  pair and a test-only control message. Safety-relevant messages carry a 4-bit
+  rolling counter and a CRC-8 that also covers the identifier.
+- `can/gen_codec.py` generates a C++17 header-only codec from the DBC
+  (`firmware/lib/protocol/`), `can/e2e_ref.py` is the independent Python
+  implementation of the protection scheme, and `can/crc_hd.py` is the
+  measurement behind the polynomial choice.
+- `firmware/lib/protocol/tests/` 34 GoogleTests cross-check the C++ codec
+  against cantools and the Python reference, with line and function coverage of
+  the library reported by gcovr.
 - `.devcontainer/` one Docker image with the Zephyr SDK, a pinned Zephyr v4.3.1
-  west workspace, can-utils, Python host tooling and Rust.
-- `firmware/app/` a minimal Zephyr C++17 application that sends one CAN frame per
-  second through the Zephyr CAN API; it builds for `native_sim` (SocketCAN) and
-  for `nucleo_f446re` (on-chip bxCAN) from the same source.
+  west workspace, can-utils, GoogleTest, Python host tooling and Rust.
+- `firmware/app/` a minimal Zephyr C++17 application that sends the protected
+  sensor heartbeat through the Zephyr CAN API; it builds for `native_sim`
+  (SocketCAN) and for `nucleo_f446re` (on-chip bxCAN) from the same source.
 - `tools/` wrappers to run anything inside the image, a vcan setup script, a
-  smoke test, and a fix for Docker Desktop on Windows whose WSL2 kernel lacks the
-  `vcan` driver (`tools/wsl2/`).
-- `.github/workflows/ci.yml` builds the image, both firmware targets, and runs the
-  smoke test on vcan.
+  smoke test that verifies the live frames with the Python reference, and a fix
+  for Docker Desktop on Windows whose WSL2 kernel lacks the `vcan` driver
+  (`tools/wsl2/`).
+- `.github/workflows/ci.yml` builds the image, checks the generated code is
+  current, runs the Python and C++ unit tests with coverage, builds both
+  firmware targets, and runs the smoke test on vcan.
 
 ## Quick start
 
@@ -29,8 +42,8 @@ Prerequisites: Docker Desktop on Windows (WSL2 backend) or Docker Engine on
 Linux, plus Git (on Windows, Git for Windows, whose Git Bash the scripts use).
 Nothing else is installed on the host. macOS: the image and both firmware
 targets build, but the simulated bus needs the `vcan` driver in Docker Desktop's
-VM kernel, which has not been verified there; treat step 4 onward as
-Windows/Linux only.
+VM kernel, which has not been verified there; treat step 4 (the live-bus smoke
+test) as Windows/Linux only. Steps 2, 3 and 5 need no `vcan`.
 
 1. **Windows only:** give the Docker VM a `vcan` driver. The first run builds the
    module (about five minutes); it is cached afterwards. The module is lost when
@@ -75,8 +88,24 @@ Windows/Linux only.
    tools/dev.sh tools/smoke-test.sh
    ```
 
-   This creates `vcan0`, starts `build/native_sim/zephyr/zephyr.exe --can-if=vcan0`
-   and runs `candump` until three frames with ID `0x100` have been seen.
+   This creates `vcan0`, starts `build/native_sim/zephyr/zephyr.exe --can-if=vcan0`,
+   runs `candump` until five `SENSOR_HEARTBEAT` frames (ID `0x200`) have been
+   seen, and verifies each one (decode, CRC, counter) with the Python reference.
+
+5. **Run the unit tests:** the Python reference implementation, then the C++
+   protocol library with coverage (report in `build/host-tests/coverage.txt`):
+
+   ```bash
+   tools/dev.sh python3 -m pytest -q can/
+   ```
+
+   ```bash
+   tools/dev.sh tools/run-host-tests.sh
+   ```
+
+   After editing `can/network.dbc`, regenerate the codec and the test vectors
+   with `tools/dev.sh tools/gen-all.sh`; CI fails if the committed copies are
+   stale.
 
 To poke around interactively, `tools/dev.sh` with no arguments opens a shell in
 the container; inside it `tools/vcan-up.sh` creates `vcan0` and `vcan1`, then

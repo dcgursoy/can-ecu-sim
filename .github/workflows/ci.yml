@@ -20,8 +20,8 @@ jobs:
   # runs every build and test step inside it through tools/dev.sh, exactly like a
   # local run. The GitHub-hosted runner's kernel provides the vcan module; the
   # container only needs CAP_NET_ADMIN to create interfaces in its own namespace.
-  phase0:
-    name: Dev image, native_sim + nucleo_f446re builds, vcan smoke test
+  build-and-test:
+    name: Dev image, generated code, host tests, native_sim + nucleo_f446re builds, vcan smoke test
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -79,6 +79,15 @@ jobs:
       - name: Tool versions
         run: tools/dev.sh tools/print-versions.sh
 
+      - name: Generated code matches can/network.dbc
+        run: tools/dev.sh tools/gen-all.sh --check
+
+      - name: Python reference implementation tests
+        run: tools/dev.sh python3 -m pytest -q can/
+
+      - name: Host unit tests with coverage (protocol library)
+        run: tools/dev.sh tools/run-host-tests.sh build/host-tests
+
       - name: Load vcan module on the runner kernel
         run: |
           sudo modprobe vcan
@@ -98,11 +107,19 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase0-builds
+          name: firmware-builds
           path: |
             build/native_sim/zephyr/zephyr.exe
             build/nucleo_f446re/zephyr/zephyr.elf
             build/nucleo_f446re/zephyr/zephyr.hex
             build/*/zephyr/.config
           include-hidden-files: true
+          if-no-files-found: warn
+
+      - name: Upload host test coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-test-coverage
+          path: build/host-tests/coverage*
           if-no-files-found: warn

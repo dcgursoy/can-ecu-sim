@@ -35,6 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-dev python3-pip python3-venv \
         can-utils iproute2 kmod iputils-ping procps socat jq less nano \
         clang-tidy cppcheck lcov \
+        libgtest-dev libgmock-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Non-root user with passwordless sudo (needed for `ip link add ... vcan`) ----

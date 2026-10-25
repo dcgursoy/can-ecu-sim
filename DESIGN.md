@@ -17,6 +17,7 @@ Contents
 7. [Build system: freestanding Zephyr application and west manifest](#7-build-system-freestanding-zephyr-application-and-west-manifest)
 8. [Continuous integration strategy](#8-continuous-integration-strategy)
 9. [Phase plan and exit criteria](#9-phase-plan-and-exit-criteria)
+10. [Phase 1: network definition, protection scheme and generated codec](#10-phase-1-network-definition-protection-scheme-and-generated-codec)
 
 ---
 
@@ -89,18 +90,21 @@ handling code shared and tested once.
 
 ## 2. Repository layout
 
-Target layout at Phase 8. After Phase 0 the repository contains `.devcontainer/`,
-`.github/`, `firmware/`, `tools/` and `docs/`; the other directories appear with
-the phase that introduces them.
+Target layout at Phase 8. After Phase 1 the repository contains `.devcontainer/`,
+`.github/`, `can/`, `firmware/` (app and the protocol library), `tools/` and
+`docs/`; the other directories appear with the phase that introduces them.
 
 ```
 can-ecu-sim/
 ├── .devcontainer/        Dockerfile + devcontainer.json: the single toolchain image
 ├── .github/workflows/    CI (builds, unit tests, pytest on vcan, static analysis)
-├── can/                  network.dbc, the one source of truth for every message
+├── can/                  network.dbc (the one source of truth), codec generator,
+│                         Python reference implementation of the protection scheme
 ├── firmware/             Zephyr application (C++17)
 │   ├── west.yml          pins the Zephyr revision and the modules it needs
-│   └── app/              CMake project: src/, boards/ overlays, prj.conf
+│   ├── app/              CMake project: src/, boards/ overlays, prj.conf
+│   └── lib/protocol/     header-only protocol library (generated codec, CRC, E2E)
+│       └── tests/        GoogleTest host tests with coverage
 ├── gateway/              Python fault-injection gateway between vcan0 and vcan1
 ├── host/                 Python host tools: logger, live decoder, analysis
 ├── tests/                pytest suite that drives the whole network
@@ -130,8 +134,8 @@ reproducibility.
 | Zephyr SDK | 0.17.4, `arm-zephyr-eabi` only | the only cross toolchain this project needs (Cortex-M4F); the minimal bundle keeps the image smaller |
 | Host compiler | Ubuntu GCC 13 with multilib | `native_sim` is a 32-bit build by default, so the simulated firmware keeps the 32-bit `int`/pointer model of the Cortex-M target |
 | Rust | 1.89.0 + `thumbv7em-none-eabihf` | pinned stable; the target triple matches the F446's Cortex-M4F with hardware FPU |
-| CAN tooling | can-utils (`candump`, `cansend`, `cangen`, `cangw`), python-can 4.x, cantools 40.x | the standard SocketCAN toolset; cantools reads the DBC and generates codecs |
-| Test and analysis | pytest 8, gcovr, lcov, clang-tidy, cppcheck | used from Phase 5 and 6 on |
+| CAN tooling | can-utils (`candump`, `cansend`, `cangen`, `cangw`), python-can 4.x, cantools 40.x | the standard SocketCAN toolset; cantools parses the DBC for `can/gen_codec.py` and is the encode/decode oracle for the generated test vectors |
+| Test and analysis | GoogleTest (Ubuntu `libgtest-dev`), pytest 8, gcovr 8 (from Phase 1); lcov, clang-tidy 18, cppcheck 2.13 (Phase 6) | host unit tests of OS-free code with coverage; static analysis later |
 
 The exact versions present in the built image are printed by
 `tools/dev.sh tools/print-versions.sh`; the output for the image used in the
@@ -187,7 +191,9 @@ governed by the Linux Foundation, and has an active functional-safety effort.
    adds the proof, an `nm` check that the final ELF references none of
    `malloc`, `calloc`, `realloc` or `operator new`.
 4. *Testing infrastructure.* `ztest` and `twister` run unit tests on `native_sim`
-   with coverage, which Phase 5 needs.
+   with coverage, which Phase 5 needs for the kernel-dependent code (supervisor,
+   queues, CAN state machine). OS-free code such as the protocol library is
+   tested on the host with GoogleTest instead (Phase 1, see §10.4).
 
 **What it costs.**
 
@@ -339,11 +345,13 @@ A single GitHub Actions job builds the dev image (layer cache in GitHub's cache,
 image pushed to GHCR on `main` so it can also be pulled instead of built), then
 runs every step through `tools/dev.sh`, the same wrapper used locally. The
 runner's own kernel supplies `vcan`; the container is started with
-`CAP_NET_ADMIN` only. Phase 0 runs three steps: build for `native_sim`, build for
-`nucleo_f446re`, and a smoke test that starts the simulated firmware on `vcan0`
-and asserts with `candump` that frames with the expected identifier appear. Later
-phases add unit tests with coverage, the full pytest suite, static analysis and
-report artifacts to the same job graph.
+`CAP_NET_ADMIN` only. After Phase 1 the job runs, in order: a check that every
+shell script is committed executable, `tools/gen-all.sh --check` (the committed
+headers match the DBC), the Python reference tests, the GoogleTest host tests
+with gcovr coverage (uploaded as the `host-test-coverage` artifact), the
+`native_sim` and `nucleo_f446re` builds, and the vcan smoke test whose captured
+frames are verified by `can/verify_candump.py`. Later phases add the pytest
+suite, static analysis and the Rust build to the same job.
 
 ## 9. Phase plan and exit criteria
 
@@ -354,7 +362,196 @@ report artifacts to the same job graph.
 | 2 | full firmware, both roles | shell shows status; controller enters safe state on heartbeat loss; no heap after init proven |
 | 3 | fault gateway and HAL error hook | each fault type demonstrated and mapped to real-bus behaviour in `docs/` |
 | 4 | logger, live decoder, analysis | bus load, period/jitter and echo RTT percentiles reported from a recorded run |
-| 5 | pytest suite, C++ unit tests, coverage | the seven test groups pass and print measured values; coverage reported |
+| 5 | pytest suite, firmware unit tests (ztest on `native_sim`) for the supervisor and CAN state machine, firmware coverage | the seven test groups pass and print measured values; coverage reported (the protocol library's host tests are Phase 1) |
 | 6 | CI complete | both targets built, all tests run, clang-tidy/cppcheck clean, artifacts uploaded |
 | 7 | Rust sensor ECU | passes the unchanged pytest suite against the C++ controller; `no_std` crate cross-compiles |
 | 8 | README, DESIGN, RESULTS | every number in the README traceable to a command and a raw log |
+
+## 10. Phase 1: network definition, protection scheme and generated codec
+
+### 10.1 The message set
+
+`can/network.dbc` is the single source of truth: the firmware codec, the test
+vectors, the host tools and the Rust port are all derived from it.
+
+| ID | Message | Sender | Period | Protected | Purpose |
+|---|---|---|---|---|---|
+| 0x080 | `CONTROLLER_COMMAND` | controller | 20 ms | yes | torque and steering command, actuator enable, the controller's mode |
+| 0x100 | `SENSOR_DATA` | sensor | 10 ms | yes | speed, yaw rate, longitudinal acceleration, sensor status |
+| 0x110 | `BATTERY_STATUS` | sensor | 100 ms | yes | pack voltage and current, state of charge, temperature, flags |
+| 0x200 | `SENSOR_HEARTBEAT` | sensor | 100 ms | yes | node state, uptime, CAN controller state, bus-off count, error flags |
+| 0x201 | `CONTROLLER_HEARTBEAT` | controller | 100 ms | yes | same layout as the sensor heartbeat |
+| 0x300 | `ECHO_REQUEST` | test host | event | no | round-trip probe addressed to one node or all |
+| 0x301 | `SENSOR_ECHO_RESPONSE` | sensor | event | no | echo of seq and payload plus the ECU's own turnaround time |
+| 0x302 | `CONTROLLER_ECHO_RESPONSE` | controller | event | no | same layout, the controller's answer |
+| 0x7E0 | `TEST_CONTROL` | test host | event | no | fault-injection commands, accepted only by test builds with the magic 0xC0DE |
+
+**Identifier choice.** On a real bus the lowest identifier wins arbitration, so
+the actuator command gets the lowest ID, the 10 ms sensor sample the next, and
+the test message the highest (0x7E0, in the range conventionally used for
+diagnostics) so test traffic can never delay safety traffic. Every identifier
+has exactly one transmitter: two nodes answering a broadcast echo under one
+identifier would both win arbitration and destroy each other's frame in the
+data field, so each ECU has its own echo response identifier (the first draft
+shared one, which only works because vcan serialises writes). Standard 11-bit
+identifiers are enough for nine messages and keep every frame short.
+
+**Bus load.** The periodic messages add up to 180 frames per second. A standard
+8-byte frame is at most 135 bits on the wire (111 bits plus up to 24 stuff bits,
+including the interframe space), so the periodic load is about 24 kbit/s: 4.9 %
+of a 500 kbit/s bus, 19 % of the 125 kbit/s default the Nucleo build uses. The
+network is deliberately light so the fault-injection flood test (Phase 3) has
+room to saturate it.
+
+**What the heartbeats carry.** Besides "I am alive", each heartbeat publishes
+the node's state machine state, its CAN controller state (error-active,
+error-passive, bus-off, stopped), a bus-off counter and latched error flags.
+That makes the internal state observable on the bus itself, which is how the
+pytest suite later checks error-passive and bus-off transitions and safe-state
+entry without a debugger.
+
+**Little-endian signals.** All multi-byte signals are Intel byte order, matching
+the Cortex-M4 and the x86 host, so no byte swapping is needed on either target
+and the generated bit copying stays simple.
+
+### 10.2 The protection scheme: rolling counter and CRC-8
+
+Modelled on AUTOSAR E2E profile 1 (layout, identifier in the CRC, 4-bit
+counter) and profile 2 (polynomial); not an implementation of either:
+
+| Byte | Content |
+|---|---|
+| 0 | CRC-8H2F over the 16-bit big-endian identifier followed by bytes 1..7 |
+| 1, bits 0-3 | 4-bit rolling counter, +1 per transmission, 15 wraps to 0 |
+| 1, bits 4-7 and 2..7 | message payload |
+
+Protected messages are always 8 bytes; the generator enforces it, so the CRC
+always covers the same 72 bits and the receiver's DLC check is a single
+comparison.
+
+**Why cover the identifier.** CAN's own 15-bit CRC already protects the bits on
+the wire; the link layer is not the threat this scheme addresses. The E2E layer
+catches what happens before and after the wire: corrupted memory, a gateway
+that forwards a frame under the wrong identifier, a stale copy replayed, frames
+lost in a queue. Mixing the identifier into the CRC means a frame that is
+intact but misrouted fails the check, and the unit tests prove it
+(`E2e.MisroutedFrameIsRejected`). What the CRC cannot see is truncation: it is
+computed over whatever arrived, so a frame shortened by trailing zero bytes can
+still check out. That is why every receiver compares the DLC with the message
+definition before it evaluates the CRC, and why `can/verify_candump.py` counts a
+wrong DLC as a fault of its own.
+
+**Why a 4-bit counter.** The receiver classifies each counter delta against the
+last accepted counter: 0 is a repeated (stale or duplicated) frame, 1 is
+correct, 2 to 8 means one to seven frames were lost, 9 to 15 is an
+out-of-sequence frame (late or replayed). Correct, repeated and skipped frames
+move the reference; an out-of-sequence frame does not, so a lone late frame
+costs exactly one fault and the next good frame is accepted as "ok" rather
+than being miscounted as seven lost frames. Four bits are enough because a gap
+of more than seven 10 ms frames is a timeout the supervisor catches anyway
+(Phase 2), and the nibble leaves the upper half of byte 1 for payload. E2E
+profile 1 uses the same width. The limit of the scheme is the 16-frame window:
+a frame delayed by exactly 16 periods looks like a repetition, one delayed by
+17 looks correct; the supervisor's timeouts, not the counter, bound staleness.
+
+**Why this polynomial.** Two CRC-8 polynomials are standard in AUTOSAR: 0x1D
+(SAE J1850, used by E2E profile 1) and 0x2F (CRC8H2F, used by profile 2).
+A CRC's error-detection strength depends on the length it protects, so instead
+of quoting a table the choice was computed for this project's codeword, 72
+protected data bits plus the 8 CRC bits (`python3 can/crc_hd.py`):
+
+| Polynomial | undetected 2-bit errors | undetected 3-bit errors | undetected 4-bit errors | Hamming distance |
+|---|---|---|---|---|
+| 0x2F CRC8H2F | 0 of 3,160 | 0 of 82,160 | 12,629 of 1,581,580 | 4 |
+| 0x1D SAE J1850 | 0 of 3,160 | 362 of 82,160 | 6,152 of 1,581,580 | 3 |
+
+0x2F detects every single, double and triple bit error in our 80-bit codeword;
+0x1D does not, so 0x2F it is. The structural reason: 0x2F has an even number
+of terms, so the polynomial has the factor (x + 1), which guarantees detection
+of every odd number of bit errors; 0x1D has an odd number of terms and no such
+factor. Both implementations (C++ and Python) are checked against the seven
+CRC8H2F check values published in the AUTOSAR CRC library specification and
+against each other on random frames. An 8-bit CRC still lets one in 256
+random multi-bit corruptions through; that residual risk is why the counter,
+the timeouts and the plausibility checks of Phase 2 exist as well. The scheme
+is not a security measure: anyone on the bus can compute it.
+
+### 10.3 The generated codec
+
+**Why a generator of our own.** cantools can emit C
+(`cantools generate_c_source`): C structs with per-signal encode and decode
+functions (`double` by default, `float` with `--use-float`), frame-ID, length,
+extended-flag and cycle-time macros, and range checks. It does not give what
+this firmware wants: C++ types (`enum class`, `std::array<uint8_t, DLC>`,
+`constexpr` round trips usable in `static_assert`), the SafetyRelevant and
+TestOnly attributes, a check that protected messages have `crc` at byte 0 and
+`counter` at byte 1, or a per-field metadata table. The generator in
+`can/gen_codec.py` is a few hundred lines: it uses cantools only as the DBC
+*parser*, refuses anything it does not model (big-endian, multiplexed, float or
+overlapping signals, extended identifiers, non-positive factors, enum values
+that do not fit their signal, a safety-relevant message that is not 8 bytes or
+lacks `crc` at byte 0 and `counter` at byte 1), and writes one header,
+`firmware/lib/protocol/include/protocol/messages.hpp`.
+
+**Shape of the generated code.** One struct per message with the *raw* integer
+signal values exactly as they travel on the wire, `constexpr` metadata
+(identifier, DLC, cycle time, safety-relevant and test-only flags, a per-field
+table with bit positions, scale, offset and raw range), `to_frame()`,
+`from_frame()` and `from_buffer(pointer, length, out)`, `operator==`, physical
+accessors (`speed_phys()`, `set_speed_phys()`) only for scaled signals, and
+`enum class` types with `to_string()` for signals that carry an `EnumName`
+attribute in the DBC. Everything is `constexpr`, so a pack/unpack round trip
+is checked with `static_assert` in the tests.
+
+**Raw integers, not floats, on the wire path.** The receive path never touches
+floating point: CRC and counter work on bytes, comparisons work on integers, and
+the physical conversion is an explicit, separate step with rounding to the
+nearest raw step and saturation at the DBC range. That keeps decoding
+deterministic across the Cortex-M4 and the host, keeps `-Wconversion` clean,
+and makes test vectors exact.
+
+**Generated code is committed.** The repository builds without running the
+generator, reviewers can read the codec, and CI runs `tools/gen-all.sh --check`
+to fail the build if the DBC and the committed headers ever drift apart.
+
+### 10.4 How the codec was proven correct
+
+Three implementations are cross-checked. cantools is third-party and is the
+oracle for bit layout and scaling. `can/e2e_ref.py` and the C++ CRC/E2E code
+were both written by me from the same written specification (the DBC header
+comment and the AUTOSAR CRC8H2F parameters), deliberately by different
+methods: the Python CRC is bitwise, the C++ one is a compile-time table that
+is itself checked against its own bitwise definition; the seven published
+AUTOSAR check values anchor both to an external source.
+
+1. **cantools** is the oracle for bit layout, sign handling and physical
+   scaling. `can/gen_test_vectors.py` encodes 32 raw vectors per message with
+   it (every signal at its minimum, at its maximum, and 30 seeded random
+   vectors), decodes them scaled, and writes both to a header.
+2. **`can/e2e_ref.py`** is the oracle for the CRC and the protected frames: 64
+   random identifier-and-frame CRCs and 20 protected frames, plus the AUTOSAR
+   check values.
+3. **The C++ library** is the unit under test. The GoogleTests check that every
+   vector decodes to the expected raw values and re-encodes to the identical
+   bytes, that every physical accessor agrees with cantools and round-trips
+   back to the same raw value, that setters saturate and handle NaN, that
+   every single-bit error in the 56 covered payload bits and the 11 identifier
+   bits of every protected vector is detected (exhaustive, 1,340 cases), that
+   the counter policy behaves as specified including the late-frame case, that
+   every raw value of every enum signal maps to its DBC label or to "UNKNOWN",
+   and that the table metadata matches the DBC. Coverage of the library headers
+   is measured with `-fkeep-inline-functions`, so an inline function that no
+   test calls counts as uncovered instead of disappearing from the figure; the
+   numbers are in `docs/phase-logs/phase1.md`.
+
+**Why GoogleTest on the host rather than ztest.** The protocol library has no
+Zephyr dependency, so its tests are an ordinary host executable: they build in
+seconds with the host GCC under `-Werror`, run under `ctest`, and gcovr
+instruments them without a Zephyr build or twister. ztest and twister stay for
+the kernel-dependent code (supervisor, queues, CAN state machine) in Phase 5.
+
+Finally the smoke test closes the loop on the live bus: the firmware (C++,
+built for `native_sim` with the host GCC as a 32-bit Linux process) sends
+protected heartbeats, and `can/verify_candump.py` decodes every captured frame
+with cantools and checks DLC, CRC and counter with the Python reference.
+

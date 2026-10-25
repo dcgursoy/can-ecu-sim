@@ -22,3 +22,6 @@ project(can_ecu LANGUAGES C CXX)
 target_sources(app PRIVATE
     src/main.cpp
 )
+
+# Platform-independent protocol library (header-only; generated from can/network.dbc).
+target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../lib/protocol/include)

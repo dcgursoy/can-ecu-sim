@@ -44,8 +44,10 @@ case "$HOST_OS" in
         export MSYS_NO_PATHCONV=1
         # Docker Desktop's WSL2 VM forgets the out-of-tree vcan module whenever
         # it restarts; reinstall it from the cached build when it is missing.
-        if ! wsl.exe -d docker-desktop -e grep -q '^vcan ' /proc/modules 2>/dev/null; then
-            "$REPO_ROOT/tools/wsl2/install-vcan-module.sh" \
+        # (stdin is redirected so the probe cannot swallow input meant for the
+        # command, e.g. a here-document piped into the container.)
+        if ! wsl.exe -d docker-desktop -e grep -q '^vcan ' /proc/modules </dev/null 2>/dev/null; then
+            "$REPO_ROOT/tools/wsl2/install-vcan-module.sh" </dev/null \
                 || echo "warning: vcan is not available in the Docker VM; see tools/wsl2/" >&2
         fi
         ;;

@@ -1,0 +1,173 @@
+VERSION "can-ecu-sim network 1.0"
+
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: SENSOR_ECU CONTROLLER_ECU TEST_HOST
+
+
+BO_ 128 CONTROLLER_COMMAND: 8 CONTROLLER_ECU
+ SG_ crc : 0|8@1+ (1,0) [0|255] "" SENSOR_ECU,TEST_HOST
+ SG_ counter : 8|4@1+ (1,0) [0|15] "" SENSOR_ECU,TEST_HOST
+ SG_ mode : 12|4@1+ (1,0) [0|15] "" SENSOR_ECU,TEST_HOST
+ SG_ torque_cmd : 16|16@1- (0.01,0) [-327.68|327.67] "Nm" SENSOR_ECU,TEST_HOST
+ SG_ steering_cmd : 32|16@1- (0.01,0) [-327.68|327.67] "deg" SENSOR_ECU,TEST_HOST
+ SG_ actuators_enabled : 48|1@1+ (1,0) [0|1] "" SENSOR_ECU,TEST_HOST
+ SG_ brake_hold : 49|1@1+ (1,0) [0|1] "" SENSOR_ECU,TEST_HOST
+ SG_ fault_latched : 50|1@1+ (1,0) [0|1] "" SENSOR_ECU,TEST_HOST
+ SG_ speed_limit : 56|8@1+ (0.1,0) [0|25.5] "m/s" SENSOR_ECU,TEST_HOST
+
+BO_ 256 SENSOR_DATA: 8 SENSOR_ECU
+ SG_ crc : 0|8@1+ (1,0) [0|255] "" CONTROLLER_ECU,TEST_HOST
+ SG_ counter : 8|4@1+ (1,0) [0|15] "" CONTROLLER_ECU,TEST_HOST
+ SG_ sensor_status : 12|4@1+ (1,0) [0|15] "" CONTROLLER_ECU,TEST_HOST
+ SG_ speed : 16|16@1+ (0.01,0) [0|655.35] "m/s" CONTROLLER_ECU,TEST_HOST
+ SG_ yaw_rate : 32|16@1- (0.1,0) [-3276.8|3276.7] "deg/s" CONTROLLER_ECU,TEST_HOST
+ SG_ accel_x : 48|16@1- (0.01,0) [-327.68|327.67] "m/s^2" CONTROLLER_ECU,TEST_HOST
+
+BO_ 272 BATTERY_STATUS: 8 SENSOR_ECU
+ SG_ crc : 0|8@1+ (1,0) [0|255] "" CONTROLLER_ECU,TEST_HOST
+ SG_ counter : 8|4@1+ (1,0) [0|15] "" CONTROLLER_ECU,TEST_HOST
+ SG_ charging : 12|1@1+ (1,0) [0|1] "" CONTROLLER_ECU,TEST_HOST
+ SG_ low_voltage : 13|1@1+ (1,0) [0|1] "" CONTROLLER_ECU,TEST_HOST
+ SG_ over_temperature : 14|1@1+ (1,0) [0|1] "" CONTROLLER_ECU,TEST_HOST
+ SG_ pack_voltage : 16|16@1+ (0.01,0) [0|655.35] "V" CONTROLLER_ECU,TEST_HOST
+ SG_ pack_current : 32|16@1- (0.1,0) [-3276.8|3276.7] "A" CONTROLLER_ECU,TEST_HOST
+ SG_ state_of_charge : 48|8@1+ (0.5,0) [0|100] "%" CONTROLLER_ECU,TEST_HOST
+ SG_ temperature : 56|8@1+ (1,-40) [-40|215] "degC" CONTROLLER_ECU,TEST_HOST
+
+BO_ 512 SENSOR_HEARTBEAT: 8 SENSOR_ECU
+ SG_ crc : 0|8@1+ (1,0) [0|255] "" CONTROLLER_ECU,TEST_HOST
+ SG_ counter : 8|4@1+ (1,0) [0|15] "" CONTROLLER_ECU,TEST_HOST
+ SG_ node_state : 12|4@1+ (1,0) [0|15] "" CONTROLLER_ECU,TEST_HOST
+ SG_ uptime : 16|32@1+ (1,0) [0|4294967295] "ms" CONTROLLER_ECU,TEST_HOST
+ SG_ can_state : 48|2@1+ (1,0) [0|3] "" CONTROLLER_ECU,TEST_HOST
+ SG_ bus_off_count : 50|6@1+ (1,0) [0|63] "" CONTROLLER_ECU,TEST_HOST
+ SG_ error_flags : 56|8@1+ (1,0) [0|255] "" CONTROLLER_ECU,TEST_HOST
+
+BO_ 513 CONTROLLER_HEARTBEAT: 8 CONTROLLER_ECU
+ SG_ crc : 0|8@1+ (1,0) [0|255] "" SENSOR_ECU,TEST_HOST
+ SG_ counter : 8|4@1+ (1,0) [0|15] "" SENSOR_ECU,TEST_HOST
+ SG_ node_state : 12|4@1+ (1,0) [0|15] "" SENSOR_ECU,TEST_HOST
+ SG_ uptime : 16|32@1+ (1,0) [0|4294967295] "ms" SENSOR_ECU,TEST_HOST
+ SG_ can_state : 48|2@1+ (1,0) [0|3] "" SENSOR_ECU,TEST_HOST
+ SG_ bus_off_count : 50|6@1+ (1,0) [0|63] "" SENSOR_ECU,TEST_HOST
+ SG_ error_flags : 56|8@1+ (1,0) [0|255] "" SENSOR_ECU,TEST_HOST
+
+BO_ 768 ECHO_REQUEST: 6 TEST_HOST
+ SG_ target_node : 0|8@1+ (1,0) [0|255] "" SENSOR_ECU,CONTROLLER_ECU
+ SG_ seq : 8|8@1+ (1,0) [0|255] "" SENSOR_ECU,CONTROLLER_ECU
+ SG_ payload : 16|32@1+ (1,0) [0|4294967295] "" SENSOR_ECU,CONTROLLER_ECU
+
+BO_ 769 SENSOR_ECHO_RESPONSE: 7 SENSOR_ECU
+ SG_ seq : 0|8@1+ (1,0) [0|255] "" TEST_HOST
+ SG_ payload : 8|32@1+ (1,0) [0|4294967295] "" TEST_HOST
+ SG_ turnaround : 40|16@1+ (1,0) [0|65535] "us" TEST_HOST
+
+BO_ 770 CONTROLLER_ECHO_RESPONSE: 7 CONTROLLER_ECU
+ SG_ seq : 0|8@1+ (1,0) [0|255] "" TEST_HOST
+ SG_ payload : 8|32@1+ (1,0) [0|4294967295] "" TEST_HOST
+ SG_ turnaround : 40|16@1+ (1,0) [0|65535] "us" TEST_HOST
+
+BO_ 2016 TEST_CONTROL: 8 TEST_HOST
+ SG_ magic : 0|16@1+ (1,0) [0|65535] "" SENSOR_ECU,CONTROLLER_ECU
+ SG_ target_node : 16|8@1+ (1,0) [0|255] "" SENSOR_ECU,CONTROLLER_ECU
+ SG_ command : 24|8@1+ (1,0) [0|255] "" SENSOR_ECU,CONTROLLER_ECU
+ SG_ arg0 : 32|16@1+ (1,0) [0|65535] "" SENSOR_ECU,CONTROLLER_ECU
+ SG_ arg1 : 48|16@1+ (1,0) [0|65535] "" SENSOR_ECU,CONTROLLER_ECU
+
+
+
+CM_ "Two-ECU demonstration network. Standard 11-bit identifiers, every identifier has exactly one transmitter, little-endian (Intel) signals. Messages marked SafetyRelevant are always 8 bytes and carry an 8-bit CRC (AUTOSAR CRC8H2F: poly 0x2F, init 0xFF, xor-out 0xFF) in byte 0 and a 4-bit rolling counter in the low nibble of byte 1. The CRC is computed over the 16-bit big-endian frame identifier followed by bytes 1..7, so a corrupted frame or a frame delivered under the wrong identifier fails the check; a frame with the wrong DLC is rejected by the receiver's length check before the CRC is evaluated.";
+CM_ BU_ SENSOR_ECU "Publishes simulated vehicle sensor data and battery status; answers echo requests.";
+CM_ BU_ CONTROLLER_ECU "Consumes sensor data, publishes actuator commands, enters a safe state when the sensor heartbeat is lost; answers echo requests.";
+CM_ BU_ TEST_HOST "Host-side test tooling (pytest, gateway, analysis). Not an ECU.";
+CM_ BO_ 128 "Actuator command from the controller, 20 ms. Highest priority on the bus. mode mirrors the controller state machine so tests can observe safe-state entry on the bus.";
+CM_ SG_ 128 mode "Controller mode, see value table.";
+CM_ SG_ 128 speed_limit "Speed ceiling the controller currently enforces (derated on low battery).";
+CM_ BO_ 256 "Simulated vehicle sensor sample, 10 ms.";
+CM_ SG_ 256 sensor_status "Sensor health, see value table.";
+CM_ BO_ 272 "Battery pack status, 100 ms.";
+CM_ BO_ 512 "Sensor ECU alive message, 100 ms. Loss drives the controller to its safe state.";
+CM_ SG_ 512 can_state "Local CAN controller state as reported by the driver, see value table. The driver's error-warning level (an error counter at or above 96) is still error-active per ISO 11898-1 and is reported as ERROR_ACTIVE; the counters, not the state, show the warning level.";
+CM_ SG_ 512 error_flags "Latched diagnostic bits: bit 0 crc_fault_seen, bit 1 counter_fault_seen, bit 2 rx_timeout_seen, bit 3 bus_off_seen, bit 4 watchdog_warning, bit 5 test_hook_active, bits 6-7 reserved.";
+CM_ BO_ 513 "Controller ECU alive message, 100 ms.";
+CM_ SG_ 513 can_state "Local CAN controller state as reported by the driver, see value table. The driver's error-warning level is reported as ERROR_ACTIVE, see SENSOR_HEARTBEAT.can_state.";
+CM_ SG_ 513 error_flags "Latched diagnostic bits: bit 0 crc_fault_seen, bit 1 counter_fault_seen, bit 2 rx_timeout_seen, bit 3 bus_off_seen, bit 4 watchdog_warning, bit 5 test_hook_active, bits 6-7 reserved.";
+CM_ BO_ 768 "Round-trip latency probe from the host. The addressed node (or every node for target_node 0) answers with its own echo response (SENSOR_ECHO_RESPONSE or CONTROLLER_ECHO_RESPONSE) carrying the same seq and payload. Each responder has its own identifier because two nodes transmitting one identifier would collide in the data field on a real bus. Not safety relevant, no CRC.";
+CM_ BO_ 769 "Sensor ECU's answer to ECHO_REQUEST. turnaround is the responder's own receive-to-transmit time, which lets the host separate ECU processing time from bus and OS latency.";
+CM_ BO_ 770 "Controller ECU's answer to ECHO_REQUEST, same layout as SENSOR_ECHO_RESPONSE.";
+CM_ BO_ 2016 "Test-only control message. Accepted only by firmware built with the test hooks enabled, and only when magic equals 0xC0DE. Drives the software fault-injection hooks (Phase 3).";
+CM_ SG_ 2016 command "See value table. arg0/arg1 semantics depend on the command.";
+
+BA_DEF_ BO_  "GenMsgCycleTime" INT 0 65535;
+BA_DEF_ BO_  "SafetyRelevant" ENUM  "No","Yes";
+BA_DEF_ BO_  "TestOnly" ENUM  "No","Yes";
+BA_DEF_ BO_  "TestMagic" INT 0 65535;
+BA_DEF_ SG_  "EnumName" STRING ;
+BA_DEF_DEF_  "GenMsgCycleTime" 0;
+BA_DEF_DEF_  "SafetyRelevant" "No";
+BA_DEF_DEF_  "TestOnly" "No";
+BA_DEF_DEF_  "TestMagic" 0;
+BA_DEF_DEF_  "EnumName" "";
+BA_ "GenMsgCycleTime" BO_ 128 20;
+BA_ "GenMsgCycleTime" BO_ 256 10;
+BA_ "GenMsgCycleTime" BO_ 272 100;
+BA_ "GenMsgCycleTime" BO_ 512 100;
+BA_ "GenMsgCycleTime" BO_ 513 100;
+BA_ "SafetyRelevant" BO_ 128 1;
+BA_ "SafetyRelevant" BO_ 256 1;
+BA_ "SafetyRelevant" BO_ 272 1;
+BA_ "SafetyRelevant" BO_ 512 1;
+BA_ "SafetyRelevant" BO_ 513 1;
+BA_ "TestOnly" BO_ 2016 1;
+BA_ "TestMagic" BO_ 2016 49374;
+BA_ "EnumName" SG_ 128 mode "ControllerMode";
+BA_ "EnumName" SG_ 256 sensor_status "SensorStatus";
+BA_ "EnumName" SG_ 512 node_state "NodeState";
+BA_ "EnumName" SG_ 512 can_state "CanState";
+BA_ "EnumName" SG_ 513 node_state "NodeState";
+BA_ "EnumName" SG_ 513 can_state "CanState";
+BA_ "EnumName" SG_ 768 target_node "Node";
+BA_ "EnumName" SG_ 2016 target_node "Node";
+BA_ "EnumName" SG_ 2016 command "TestCommand";
+
+VAL_ 128 mode 0 "INIT" 1 "NORMAL" 2 "DEGRADED" 3 "SAFE_STATE" ;
+VAL_ 256 sensor_status 0 "OK" 1 "DEGRADED" 2 "FAULT" ;
+VAL_ 512 node_state 0 "BOOT" 1 "RUNNING" 2 "DEGRADED" 3 "SAFE_STATE" 4 "FAULT" ;
+VAL_ 512 can_state 0 "ERROR_ACTIVE" 1 "ERROR_PASSIVE" 2 "BUS_OFF" 3 "STOPPED" ;
+VAL_ 513 node_state 0 "BOOT" 1 "RUNNING" 2 "DEGRADED" 3 "SAFE_STATE" 4 "FAULT" ;
+VAL_ 513 can_state 0 "ERROR_ACTIVE" 1 "ERROR_PASSIVE" 2 "BUS_OFF" 3 "STOPPED" ;
+VAL_ 768 target_node 0 "ALL" 1 "SENSOR_ECU" 2 "CONTROLLER_ECU" ;
+VAL_ 2016 target_node 0 "ALL" 1 "SENSOR_ECU" 2 "CONTROLLER_ECU" ;
+VAL_ 2016 command 0 "NOP" 1 "RESET_FAULTS" 2 "INJECT_CAN_ERROR" 3 "FORCE_BUS_OFF" 4 "SUPPRESS_HEARTBEAT" 5 "CORRUPT_CRC" 6 "SKIP_COUNTER" 7 "FREEZE_COUNTER" 8 "SUPPRESS_MESSAGE" ;

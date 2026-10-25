@@ -1,0 +1,22 @@
+/*
+ * native_sim: route the Zephyr CAN API to a Linux SocketCAN interface instead of
+ * the board's default in-process loopback controller. The interface name below
+ * is the build-time default; it can be overridden per process at run time with
+ *     ./zephyr.exe --can-if=vcan1
+ * which is how the two ECU processes end up on different bus segments when the
+ * fault-injection gateway sits between them.
+ */
+/ {
+	chosen {
+		zephyr,canbus = &can0;
+	};
+};
+
+&can0 {
+	status = "okay";
+	host-interface = "vcan0";
+};
+
+&can_loopback0 {
+	status = "disabled";
+};

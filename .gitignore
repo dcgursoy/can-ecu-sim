@@ -1,0 +1,33 @@
+# Build outputs
+build/
+firmware/build*/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Rust
+rust/**/target/
+
+# Tool caches and kernel-module build outputs (kernel specific, never committed)
+tools/wsl2/out/
+.cache/
+.ccache/
+
+# Logs and measured data produced by local runs (curated copies live in docs/)
+logs/
+*.log
+*.asc
+
+# Editors
+.vscode/
+.idea/
+*.swp

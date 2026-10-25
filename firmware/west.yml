@@ -1,0 +1,24 @@
+# West manifest for the firmware.
+#
+# The dev-container image copies this file and runs `west init -l` / `west update`
+# against it at image build time, so this file is the single source of truth for
+# the Zephyr revision and the modules the firmware needs. Only the modules in the
+# allowlist are cloned: CMSIS 6 core headers for Cortex-M (Zephyr 4.x uses the
+# cmsis_6 module for Cortex-M; the older `cmsis` module serves Cortex-A/R only)
+# and the STM32 HAL for the Nucleo-F446RE build.
+#
+# Changing this file requires rebuilding the image (tools/dev.sh --build);
+# firmware/app/CMakeLists.txt fails the build if the two copies differ.
+manifest:
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v4.3.1
+      import:
+        name-allowlist:
+          - cmsis_6
+          - hal_stm32

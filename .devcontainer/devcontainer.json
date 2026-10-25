@@ -1,0 +1,34 @@
+{
+  "name": "can-ecu-sim",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "options": [
+      "--platform=linux/amd64"
+    ]
+  },
+  "workspaceFolder": "/workspaces/can-ecu-sim",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/can-ecu-sim,type=bind",
+  "remoteUser": "dev",
+  "runArgs": [
+    "--platform=linux/amd64",
+    "--cap-add=NET_ADMIN",
+    "--hostname=can-ecu-sim"
+  ],
+  "postStartCommand": "tools/vcan-up.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "ms-python.python",
+        "rust-lang.rust-analyzer",
+        "nordic-semiconductor.nrf-devicetree",
+        "nordic-semiconductor.nrf-kconfig"
+      ],
+      "settings": {
+        "files.eol": "\n"
+      }
+    }
+  }
+}

@@ -1,0 +1,108 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # The checkout on GitHub runners is owned by uid 1001; run as root inside the
+  # container so builds can write to the bind-mounted workspace.
+  CAN_ECU_SIM_DOCKER_ARGS: --user root
+
+jobs:
+  # One job builds the dev-container image (layer-cached between runs) and then
+  # runs every build and test step inside it through tools/dev.sh, exactly like a
+  # local run. The GitHub-hosted runner's kernel provides the vcan module; the
+  # container only needs CAP_NET_ADMIN to create interfaces in its own namespace.
+  phase0:
+    name: Dev image, native_sim + nucleo_f446re builds, vcan smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The repository is developed on Windows, where the working tree cannot
+      # carry the executable bit; it must be set in the index (git add --chmod=+x).
+      - name: Shell scripts are committed executable
+        run: |
+          bad=$(git ls-files -s -- '*.sh' | awk '$1 != "100755" {print $4}')
+          if [ -n "$bad" ]; then
+            echo "not executable in the git index (fix: git update-index --chmod=+x <file>):"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: Set image name (GHCR requires a lowercase path)
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/dev" >> "$GITHUB_ENV"
+          echo "CAN_ECU_SIM_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/dev:${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build dev container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .devcontainer/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push dev container image to GHCR
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push "$IMAGE:$GITHUB_SHA"
+          # Only main moves the "latest" tag; a workflow_dispatch from a branch does not.
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            docker push "$IMAGE:latest"
+          fi
+
+      - name: Tool versions
+        run: tools/dev.sh tools/print-versions.sh
+
+      - name: Load vcan module on the runner kernel
+        run: |
+          sudo modprobe vcan
+          sudo modprobe can-gw || true
+          lsmod | grep -E '^(vcan|can) '
+
+      - name: Build firmware for native_sim
+        run: tools/dev.sh west build -p always -b native_sim -s firmware/app -d build/native_sim
+
+      - name: Build firmware for nucleo_f446re
+        run: tools/dev.sh west build -p always -b nucleo_f446re -s firmware/app -d build/nucleo_f446re
+
+      - name: Smoke test, candump sees the frame on vcan0
+        run: tools/dev.sh tools/smoke-test.sh build/native_sim/zephyr/zephyr.exe
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase0-builds
+          path: |
+            build/native_sim/zephyr/zephyr.exe
+            build/nucleo_f446re/zephyr/zephyr.elf
+            build/nucleo_f446re/zephyr/zephyr.hex
+            build/*/zephyr/.config
+          include-hidden-files: true
+          if-no-files-found: warn

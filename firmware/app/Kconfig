@@ -1,0 +1,124 @@
+# Application configuration. Select on the west command line, e.g.
+#   west build -b native_sim -s firmware/app -- -DCONFIG_APP_ROLE_CONTROLLER=y
+# or interactively with `west build -t menuconfig`.
+mainmenu "can-ecu-sim firmware"
+
+choice APP_ROLE
+	prompt "ECU role"
+	default APP_ROLE_SENSOR
+	help
+	  One codebase builds both nodes of the network. The role selects which
+	  messages are published, which are monitored, and the node policy
+	  (the controller has a safe state, the sensor only degrades).
+
+config APP_ROLE_SENSOR
+	bool "Sensor ECU: publishes SENSOR_DATA, BATTERY_STATUS and its heartbeat"
+
+config APP_ROLE_CONTROLLER
+	bool "Controller ECU: consumes sensor data, publishes CONTROLLER_COMMAND, has a safe state"
+
+endchoice
+
+config APP_TEST_HOOKS
+	bool "Test-only hooks: accept TEST_CONTROL, simulate CAN controller error states"
+	default y if BOARD_NATIVE_SIM
+	default n
+	help
+	  Compiles in the TEST_CONTROL message handler and the HAL's simulated
+	  CAN controller (ISO 11898-1 error counters) so error-passive and
+	  bus-off can be exercised on a virtual bus that never produces
+	  electrical errors. Off by default for hardware builds: a production
+	  image must not expose fault injection on the bus.
+
+menu "Timing"
+
+config APP_SUPERVISOR_TICK_MS
+	int "Supervisor period in ms"
+	default 5
+	help
+	  Resolution of timeout detection, bus-off backoff timing and watchdog
+	  feeding. Half the shortest message period keeps the detection latency
+	  jitter below one sensor period.
+
+config APP_SENSOR_DATA_TIMEOUT_MS
+	int "SENSOR_DATA (10 ms) timeout in ms"
+	default 35
+	help
+	  Three periods plus margin: two consecutive losses are tolerated, the
+	  third is a timeout. The controller enters its safe state when it fires.
+
+config APP_BATTERY_STATUS_TIMEOUT_MS
+	int "BATTERY_STATUS (100 ms) timeout in ms"
+	default 350
+
+config APP_COMMAND_TIMEOUT_MS
+	int "CONTROLLER_COMMAND (20 ms) timeout in ms"
+	default 70
+
+config APP_HEARTBEAT_TIMEOUT_MS
+	int "Heartbeat (100 ms) timeout in ms"
+	default 350
+
+config APP_SAFE_STATE_RECOVERY_MS
+	int "Inputs must be healthy this long before leaving the safe state"
+	default 500
+
+config APP_QUALITY_FAULT_THRESHOLD
+	int "Consecutive rejected frames of one message that mark the node DEGRADED"
+	default 3
+
+endmenu
+
+menu "CAN bus-off recovery"
+
+config APP_BUSOFF_BACKOFF_INITIAL_MS
+	int "Backoff before the first recovery attempt in ms"
+	default 100
+
+config APP_BUSOFF_BACKOFF_MAX_MS
+	int "Backoff cap in ms (doubles per failed attempt)"
+	default 1600
+
+config APP_BUSOFF_RECOVERY_TIMEOUT_MS
+	int "Time allowed for the controller to report error-active after recover()"
+	default 500
+
+config APP_BUSOFF_MAX_ATTEMPTS
+	int "Consecutive failed attempts before the node latches FAULT"
+	default 5
+
+config APP_BUSOFF_STABLE_MS
+	int "Error-active this long forgets previous attempts"
+	default 10000
+
+endmenu
+
+menu "Watchdog and threads"
+
+config APP_WATCHDOG_TIMEOUT_MS
+	int "Hardware watchdog timeout in ms"
+	default 1000
+
+config APP_LIVENESS_WINDOW_MS
+	int "Every thread must check in within this window or the watchdog is not fed"
+	default 300
+
+config APP_RX_QUEUE_DEPTH
+	int "CAN receive queue depth (frames)"
+	default 32
+	help
+	  Frames the driver can park while the RX thread is busy. A node never
+	  receives its own frames, so 32 frames is about 270 ms of the
+	  controller's nominal inbound traffic (120 frames/s) and 530 ms of the
+	  sensor's (60 frames/s); against the whole bus (180 frames/s, what a
+	  flood test can deliver to one node) it is about 180 ms. A frame that
+	  finds the queue full is dropped in the HAL's receive callback and
+	  counted (`dropped` in `ecu status`); the high-water mark is shown too.
+
+config APP_THREAD_STACK_SIZE
+	int "Stack size of the RX, TX and supervisor threads"
+	default 2048
+
+endmenu
+
+source "Kconfig.zephyr"

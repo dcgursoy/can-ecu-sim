@@ -1,0 +1,15 @@
+/*
+ * Nucleo-F446RE: the board file already chooses bxCAN can2 (PB12/PB13) as
+ * zephyr,canbus. Enable the independent watchdog: clocked by the LSI oscillator
+ * (enabled in the board file) and impossible to stop once started, which is the
+ * property the supervisor relies on.
+ */
+/ {
+	aliases {
+		watchdog0 = &iwdg;
+	};
+};
+
+&iwdg {
+	status = "okay";
+};

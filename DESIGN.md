@@ -18,6 +18,7 @@ Contents
 8. [Continuous integration strategy](#8-continuous-integration-strategy)
 9. [Phase plan and exit criteria](#9-phase-plan-and-exit-criteria)
 10. [Phase 1: network definition, protection scheme and generated codec](#10-phase-1-network-definition-protection-scheme-and-generated-codec)
+11. [Phase 2: the firmware](#11-phase-2-the-firmware)
 
 ---
 
@@ -90,9 +91,9 @@ handling code shared and tested once.
 
 ## 2. Repository layout
 
-Target layout at Phase 8. After Phase 1 the repository contains `.devcontainer/`,
-`.github/`, `can/`, `firmware/` (app and the protocol library), `tools/` and
-`docs/`; the other directories appear with the phase that introduces them.
+Target layout at Phase 8. After Phase 2 the repository contains `.devcontainer/`,
+`.github/`, `can/`, `firmware/`, `tools/` and `docs/`; the other directories
+appear with the phase that introduces them.
 
 ```
 can-ecu-sim/
@@ -102,9 +103,13 @@ can-ecu-sim/
 │                         Python reference implementation of the protection scheme
 ├── firmware/             Zephyr application (C++17)
 │   ├── west.yml          pins the Zephyr revision and the modules it needs
-│   ├── app/              CMake project: src/, boards/ overlays, prj.conf
-│   └── lib/protocol/     header-only protocol library (generated codec, CRC, E2E)
-│       └── tests/        GoogleTest host tests with coverage
+│   ├── app/              Kconfig (role, timeouts, recovery policy), boards/ overlays
+│   │   └── src/          main, app/ (threads, supervisor, roles, test hooks),
+│   │                     hal/ (CAN controller, watchdog), shell_cmds.c, alloc_guard.c
+│   └── lib/              header-only libraries, unit tested on the host
+│       ├── protocol/     generated codec, CRC-8, E2E counter/CRC
+│       └── ecu_core/     timeout monitor, protected RX policy, CAN error state
+│                         machine, node state machine, liveness, error-counter model
 ├── gateway/              Python fault-injection gateway between vcan0 and vcan1
 ├── host/                 Python host tools: logger, live decoder, analysis
 ├── tests/                pytest suite that drives the whole network
@@ -345,13 +350,19 @@ A single GitHub Actions job builds the dev image (layer cache in GitHub's cache,
 image pushed to GHCR on `main` so it can also be pulled instead of built), then
 runs every step through `tools/dev.sh`, the same wrapper used locally. The
 runner's own kernel supplies `vcan`; the container is started with
-`CAP_NET_ADMIN` only. After Phase 1 the job runs, in order: a check that every
-shell script is committed executable, `tools/gen-all.sh --check` (the committed
-headers match the DBC), the Python reference tests, the GoogleTest host tests
-with gcovr coverage (uploaded as the `host-test-coverage` artifact), the
-`native_sim` and `nucleo_f446re` builds, and the vcan smoke test whose captured
-frames are verified by `can/verify_candump.py`. Later phases add the pytest
-suite, static analysis and the Rust build to the same job.
+`CAP_NET_ADMIN` only. After Phase 2 the job runs, in order: a check that every
+shell script is committed executable, the `vcan` precondition on the runner
+(first, so a runner without the module fails in seconds), `tools/gen-all.sh
+--check` (the committed headers match the DBC), the Python reference tests, the
+GoogleTest host tests of both libraries with gcovr coverage (uploaded as the
+`host-test-coverage` artifact), the four firmware images (two boards, two
+roles), the allocator check on each image, the vcan smoke test whose captured
+frames are verified by `can/verify_candump.py`, and the three network demos
+(`run`, `safe-state`, `bus-off`) with their logs uploaded as `network-logs`. A
+demo that fails a criterion while the bus log shows a host scheduling stall is
+reported inconclusive and repeated up to twice; a failure without a stall is a
+real failure. Later phases add the pytest suite, static analysis and the Rust
+build to the same job.
 
 ## 9. Phase plan and exit criteria
 
@@ -554,4 +565,249 @@ Finally the smoke test closes the loop on the live bus: the firmware (C++,
 built for `native_sim` with the host GCC as a 32-bit Linux process) sends
 protected heartbeats, and `can/verify_candump.py` decodes every captured frame
 with cantools and checks DLC, CRC and counter with the Python reference.
+
+## 11. Phase 2: the firmware
+
+### 11.1 One codebase, two roles, three layers
+
+The firmware is split so that the parts worth testing are testable without
+Zephyr and the parts that touch hardware are small:
+
+| Layer | Where | Depends on | Tested by |
+|---|---|---|---|
+| protocol codec, CRC, counter | `firmware/lib/protocol/` | nothing | 34 GoogleTests on the host |
+| ECU logic: timeout monitor, protected receiver policy, CAN error state machine, node state machine, liveness, error-counter model | `firmware/lib/ecu_core/` | protocol | 36 GoogleTests on the host |
+| HAL: CAN controller, watchdog | `firmware/app/src/hal/` | Zephyr driver APIs | the network running on vcan; the Nucleo build |
+| application: threads, supervisor, roles, shell, test hooks | `firmware/app/src/app/` | all of the above | the network demos on vcan |
+
+The role is a Kconfig choice (`APP_ROLE_SENSOR` / `APP_ROLE_CONTROLLER`). It
+selects a header of compile-time constants (name, node id, the messages this
+node monitors with their timeouts, the node policy) and one of two role sources
+(`sensor_role.cpp` / `controller_role.cpp`); everything else is shared. The four
+images (two boards, two roles) are built from the same sources by
+`tools/build-ecu.sh`.
+
+### 11.2 Threads and priorities
+
+Zephyr priorities: a lower number runs first. The application creates three
+threads (`can_rx`, `can_tx`, `supervisor`), all preemptive. On `native_sim` the
+SocketCAN driver adds its own RX thread; the bxCAN driver on the Nucleo has no
+such thread because it delivers frames from the RX interrupt. The table lists
+both plus the shell and logging threads.
+
+| Thread | Priority | Period | Job | Why this priority |
+|---|---|---|---|---|
+| CAN driver RX (Zephyr's own, native_sim only) | 2, Zephyr's default (`CONFIG_CAN_NATIVE_LINUX_RX_THREAD_PRIORITY`) | polls the socket every 1 ms | moves frames from the Linux socket into the application's queue and delivers the TX confirmations that free the driver's single mailbox | left at its default above all application threads so neither the poll nor TX completion can be starved by application work. Frames are not lost here (unread frames wait in the socket buffer); the only drop point is the 32-frame application queue, and a producer that outranks its consumer mirrors the Nucleo, where the producer is the RX interrupt |
+| `can_rx` | 3 | event | drains the 32-frame queue: DLC, CRC, counter check, dispatch to the role, echo responses, test control | bounded work per frame; the highest application priority so the queue cannot fill under load |
+| `can_tx` | 4 | 10 ms tick | the role emits whatever is due (10/20/100 ms messages) | jitter here is jitter on the bus; below RX because a frame already on the bus is worth more than one about to leave |
+| `supervisor` | 5 | 5 ms tick | CAN controller events and bus-off recovery, message timeouts, node state, watchdog feed | control plane with millisecond deadlines, not microsecond ones; 5 ms is half the shortest message period, so timeout detection latency is bounded by one sensor period |
+| shell, logging | lowest | event | diagnostics | must never delay the data path |
+
+The RX path is "driver callback into a message queue, application thread drains
+it", never work in the callback: on the Nucleo the bxCAN driver calls the filter
+callback from the RX interrupt, and a frame's CRC check, state update and
+possible response belong in a thread. The queue is a `k_msgq` of 32 frames: a
+node never receives its own frames, so that is about 270 ms of the controller's
+120 frames/s inbound traffic and 180 ms of the whole bus (what a flood can
+deliver to one node). A frame that finds the queue full is dropped in the HAL's
+receive callback and counted; the shell shows that count and the high-water
+mark.
+
+No kernel object is allocated at run time: the thread stacks and the two tick
+timers are defined statically (`K_THREAD_STACK_DEFINE`, `K_TIMER_DEFINE`), the
+three thread control blocks and the two message queues are static storage that
+`app::start()` initialises in place. There are no semaphores or mutexes; the
+only lock is one `k_spinlock` around the shared status block. The TX tick and
+the supervisor tick are periodic `k_timer`s; Zephyr re-arms a periodic timer
+from its scheduled expiry, not from when the thread woke, so neither period
+drifts with the work done in it, and the TX thread counts missed ticks
+(`tick_overruns` in the shell) instead of silently catching up.
+
+Every thread checks in with a liveness table on each loop iteration (the RX
+thread's queue wait has a timeout so it checks in even on a silent bus), and the
+supervisor feeds the hardware watchdog only when every thread has checked in
+within the last 300 ms. A single stuck thread therefore resets the ECU although
+the supervisor is still alive, which a plain "feed from a timer" would not do.
+The watchdog is the IWDG on the Nucleo (LSI-clocked, cannot be stopped once
+started) and a counter-backed watchdog on `native_sim`, both at 1 s behind the
+same Zephyr API through the `watchdog0` alias. Two details the review caught:
+the STM32 IWDG driver arms itself with a 100 ms timeout at boot unless
+`CONFIG_WDT_DISABLE_AT_BOOT=y` is set, and then rejects the application's
+timeout, which would have been a reset loop on the board; and on `native_sim`
+an expiry only restarts the process (exit and re-exec with the same arguments)
+with `CONFIG_NATIVE_SIM_REBOOT=y`, otherwise it merely exits. Both are set in
+the board configuration files, and the IWDG case is also a compile-time error
+in `hal/watchdog.cpp`.
+
+### 11.3 Timeouts and the node state machine
+
+| Message | Period | Timeout | Rule |
+|---|---|---|---|
+| `SENSOR_DATA` | 10 ms | 35 ms | three periods plus margin: two consecutive losses are tolerated |
+| `CONTROLLER_COMMAND` | 20 ms | 70 ms | same ratio |
+| heartbeats, `BATTERY_STATUS` | 100 ms | 350 ms | same ratio |
+
+Timeouts are tracked per message by a deadline that every accepted frame
+renews; only frames that pass DLC, CRC and counter checks renew it, so a sender
+that keeps transmitting garbage times out like a silent one. Repeated and
+out-of-sequence frames are rejected (no new information), frames after a counter
+gap are accepted and the gap is counted. When a message times out its receiver
+forgets the counter history, so a peer that restarts at counter 0 is accepted
+instead of being rejected as out of sequence forever.
+
+The node state is the DBC's `NodeState` and is published in the heartbeat:
+
+- **BOOT** until the critical inputs have either arrived (then RUNNING) or timed
+  out (then SAFE_STATE). Waiting for peers at power-up is not a fault and does
+  not count as a safe-state entry; the first version of the firmware entered
+  SAFE_STATE 5 ms after boot because of exactly this, and the demo numbers
+  exposed it.
+- **RUNNING / DEGRADED**: all critical inputs alive; DEGRADED when a receiver
+  has rejected three frames in a row, the battery reports low voltage or over
+  temperature, the sensor reports anything but OK, or the battery status (not
+  critical) is missing. The controller derates its speed limit in DEGRADED.
+- **SAFE_STATE** (controller): sensor data or the sensor heartbeat lost, or the
+  node's own CAN controller bus-off. Actuators disabled, torque and steering
+  zero, brake held, speed limit zero, `mode = SAFE_STATE` in every command, so
+  the safe command is on the bus at the normal rate rather than silence. The
+  sensor has nothing to make safe, so for it the same conditions mean
+  DEGRADED. SAFE_STATE is left automatically after the inputs have been
+  healthy for 500 ms, so a transient loss costs a bounded, measurable outage and
+  one good frame cannot flip the node back and forth at the message rate.
+- **FAULT**: latched; entered when bus-off recovery is exhausted, cleared only
+  by `ecu reset` or the RESET_FAULTS test command.
+
+Measured with `tools/ecu_network.py safe-state` (sensor process killed,
+restarted two seconds later; host-side bus timestamps): the first `SAFE_STATE`
+command appeared 54.1 ms after the last sensor frame (35 ms timeout, up to 5 ms
+supervisor tick, up to 20 ms command period). After the restart the first
+`NORMAL` command came 585.4 ms after the restarted sensor's first frame: both
+critical inputs have to be alive before the hold starts, and the restarted
+sensor's first heartbeat is in a later 10 ms slot than its first data frame
+(60.4 ms later here), so the figure that the policy bounds is the 525.0 ms from
+that first heartbeat (500 ms hold plus the same granularities).
+`docs/phase-logs/phase2.md` has the raw output.
+
+### 11.4 CAN error handling and bus-off recovery
+
+The controller's fault-confinement state (error-active, error-passive, bus-off)
+belongs to the peripheral; the firmware decides what to do about it:
+
+- error-passive: keep transmitting (the controller enforces its own suspend
+  time), count the event, publish it in the heartbeat;
+- bus-off: stop transmitting at once; after a backoff ask the driver to recover
+  (`can_recover()`, which needs `CONFIG_CAN_MANUAL_RECOVERY_MODE` and the
+  controller in manual recovery mode, so the bxCAN's automatic ABOM recovery is
+  off); double the backoff on each failed attempt from 100 ms up to 1.6 s;
+  after five consecutive failures latch FAULT;
+- recovered: when the controller is error-active again; ten seconds of
+  uninterrupted error-active forget earlier attempts. A recovery that does not
+  hold (bus-off again within those ten seconds) counts as a failed attempt, so
+  a flapping node's backoff keeps doubling and it ends in FAULT instead of
+  reconnecting forever.
+
+How the machine learns about the controller state matters as much as the
+policy. The state-change callback is edge-triggered, and the bxCAN driver
+raises it only when a *worse* state is entered: its status interrupt fires when
+an error flag is set, never when it clears. The return to error-active after
+a recovery, and from passive to active, would therefore never arrive as an
+event, the recovery would time out, and after five attempts the node would
+latch FAULT on a perfectly healthy bus. The supervisor therefore also polls the
+controller state once per tick (one register read) and feeds it to the machine
+level-triggered; that path reacts only to the improvements the callback cannot
+deliver, and ignores a bus-off reading during backoff or recovery (the
+recovery sequence is still running). The first version relied on the callback
+alone and passed every simulator test, because the simulated controller
+reports both directions; the review found it by reading the driver.
+
+Why back off instead of reconnecting immediately: a node that went bus-off
+because it is the one corrupting the bus (wrong bit rate, bad termination)
+takes the bus down again the moment it returns, and immediate retries make the
+whole network unusable; spacing the attempts leaves bandwidth for the healthy
+nodes and gives a diagnostic a visible pattern. Why cap the attempts: a
+permanent fault must end in a defined state, not an infinite loop. During bus-off
+and recovery the node state machine treats the node as having lost its inputs
+(it cannot be sure it is still part of the network), so the controller is in
+SAFE_STATE for the duration. A `reset` while the controller is still bus-off
+restarts the recovery cycle from the first backoff rather than pretending the
+bus is back.
+
+A virtual bus never produces electrical errors, so on `native_sim` the HAL
+carries a simulated controller behind `CONFIG_APP_TEST_HOOKS`: an ISO 11898-1
+error-counter model (TEC +8 per transmit error, -1 per success; passive above
+127, bus-off above 255; counters frozen until recovery) fed by the
+`TEST_CONTROL` message. Its state changes travel through the same listener the
+real driver uses, bus-off blocks `send()` the way a real controller would, real
+transmit results heal the simulated counters, and `recover()` completes after a
+modelled 128 x 11-bit recovery delay, a fixed 3 ms (the 1408 bit times take
+2.8 ms at 500 kbit/s; a virtual bus has no bit rate, and on the Nucleo the
+peripheral performs the real sequence). Measured with
+`tools/ecu_network.py bus-off`: 30 injected errors put the controller in
+error-passive, visible in 19 consecutive heartbeats while successful frames
+healed the counter; a forced bus-off produced one gap of 120 ms in the command
+stream (100 ms backoff, up to 5 ms supervisor tick, 3 ms recovery, one 20 ms
+command period), a logged recovery of 103 ms and one safe-state entry on the
+controller, and on the sensor one command timeout and one heartbeat counter
+gap, which is exactly what a real bus-off of this length would look like to a
+peer.
+
+### 11.5 No dynamic allocation after initialisation
+
+Three mechanisms, each checkable:
+
+1. The kernel heap pool is compiled out (`CONFIG_HEAP_MEM_POOL_SIZE=0`), the
+   picolibc arena is zero on the Nucleo, and the only run-time allocation in
+   the stock configuration, the shell's command history, is disabled.
+2. The allocator entry points are wrapped at link time (`-Wl,--wrap`): the
+   public kernel allocators (`k_malloc` family, `k_heap_*`), the `sys_heap`
+   leaf functions they all end in, and on the Nucleo the C allocators
+   (`malloc`, `calloc`, `realloc`, which libstdc++'s `operator new` calls). The
+   wrapper forwards to the real function until `app::start()` completes and
+   panics afterwards (`src/alloc_guard.c`). Any code path that allocates at run
+   time fails loudly the first time it executes. On `native_sim` the host libc
+   belongs to the simulator runtime and is left unwrapped, so there a C or C++
+   allocation in application code is caught by the static scan only.
+3. `tools/check-no-heap.sh`, run in CI on all four images, lists every object
+   that references an allocator (including the aligned and nothrow `operator
+   new` overloads and the realloc family) and fails if one is outside the
+   kernel's own allocator layering, and then checks the final image: each
+   wrapped allocator is either absent (no reachable call path, dead-stripped by
+   `--gc-sections`) or present together with its guard. The check is
+   fail-closed: a missing tool, an empty build or a missing image is an error,
+   not a pass. On all four images every wrapped allocator is absent, which is
+   the strongest of the two outcomes.
+
+### 11.6 Shell
+
+`ecu status` prints the role, node state with its reason and age, CAN phase and
+state with error counters, bus-off and recovery statistics, transmit and receive
+counters, per-message receive statistics (accepted, CRC faults, counter faults,
+DLC faults, gaps, timeouts, age), watchdog feeds and skipped feeds, and a role
+line (the controller's current command, the sensor's current readings). `ecu
+reset` clears the latched faults (FAULT state, an exhausted CAN recovery, the
+error flags, the watchdog skip count and the per-message receive fault
+counters) and keeps the cumulative transmit, receive and bus-off history, which
+is the more useful diagnostic. The command is written in C because Zephyr's
+shell macros rely on C designated initialisers; it reads a snapshot struct
+filled by the C++ application. On `native_sim` the shell sits on the process's
+stdin/stdout, which is how `tools/ecu_network.py` and the pytest fixtures drive
+it through a pipe.
+
+### 11.7 What the simulator taught about itself
+
+Console output on `native_sim` is synchronous host I/O, byte by byte. With the
+process logs on the Windows bind mount of the dev container (a 9p filesystem),
+one `ecu status` print stalled the process for tens of milliseconds of host
+time, during which it neither transmitted nor received; the peer saw a 35 ms gap
+and entered its safe state. Nothing was wrong in simulated time (no missed
+ticks), which is why the firmware-side counters showed nothing. The run-time
+logs now live inside the container and are copied out afterwards. On hardware
+the equivalent hazard is logging in immediate mode from a high-priority
+context. Neither log mode is a choice this project makes in Kconfig: Zephyr's
+`LOG_MODE` defaults to immediate on the POSIX architecture and to deferred
+everywhere else. `boards/native_sim.conf` pins immediate mode explicitly so
+that log order equals execution order even if that default changes; the Nucleo
+build keeps the deferred default, in which the log processing thread at the
+lowest application priority does the UART writes and no application thread,
+interrupt or CAN callback ever blocks on the console.
 

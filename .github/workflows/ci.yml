@@ -21,7 +21,7 @@ jobs:
   # local run. The GitHub-hosted runner's kernel provides the vcan module; the
   # container only needs CAP_NET_ADMIN to create interfaces in its own namespace.
   build-and-test:
-    name: Dev image, generated code, host tests, native_sim + nucleo_f446re builds, vcan smoke test
+    name: Dev image, generated code, host tests, firmware builds, network on vcan
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -37,6 +37,14 @@ jobs:
             echo "$bad"
             exit 1
           fi
+
+      # Host-side precondition for every vcan step below; checked first so a
+      # runner image without the module fails in seconds, not after the builds.
+      - name: Load vcan module on the runner kernel
+        run: |
+          sudo modprobe vcan
+          sudo modprobe can-gw || true
+          lsmod | grep -E '^(vcan|can) '
 
       - name: Set image name (GHCR requires a lowercase path)
         run: |
@@ -85,23 +93,39 @@ jobs:
       - name: Python reference implementation tests
         run: tools/dev.sh python3 -m pytest -q can/
 
-      - name: Host unit tests with coverage (protocol library)
+      - name: Host unit tests with coverage (protocol + ecu_core libraries)
         run: tools/dev.sh tools/run-host-tests.sh build/host-tests
 
-      - name: Load vcan module on the runner kernel
+      - name: Build firmware, native_sim, both roles
         run: |
-          sudo modprobe vcan
-          sudo modprobe can-gw || true
-          lsmod | grep -E '^(vcan|can) '
+          tools/dev.sh tools/build-ecu.sh native_sim sensor -p always
+          tools/dev.sh tools/build-ecu.sh native_sim controller -p always
 
-      - name: Build firmware for native_sim
-        run: tools/dev.sh west build -p always -b native_sim -s firmware/app -d build/native_sim
+      - name: Build firmware, nucleo_f446re, both roles
+        run: |
+          tools/dev.sh tools/build-ecu.sh nucleo_f446re sensor -p always
+          tools/dev.sh tools/build-ecu.sh nucleo_f446re controller -p always
 
-      - name: Build firmware for nucleo_f446re
-        run: tools/dev.sh west build -p always -b nucleo_f446re -s firmware/app -d build/nucleo_f446re
+      - name: No dynamic allocation after init (all four images)
+        run: |
+          for d in native_sim_sensor native_sim_controller nucleo_f446re_sensor nucleo_f446re_controller; do
+            tools/dev.sh tools/check-no-heap.sh "build/$d"
+          done
 
-      - name: Smoke test, candump sees the frame on vcan0
-        run: tools/dev.sh tools/smoke-test.sh build/native_sim/zephyr/zephyr.exe
+      - name: Smoke test, candump sees protected frames on vcan0
+        run: tools/dev.sh tools/smoke-test.sh build/native_sim_sensor/zephyr/zephyr.exe
+
+      # The demos are desktop processes on a shared runner: a run with a detected
+      # host stall is INCONCLUSIVE and repeated (up to two retries), a run with
+      # a failed criterion and no stall is a real failure.
+      - name: Two-ECU network on vcan, all messages verified
+        run: tools/dev.sh python3 tools/ecu_network.py --retries 2 run --duration 3
+
+      - name: Safe-state entry and recovery when the sensor dies
+        run: tools/dev.sh python3 tools/ecu_network.py --retries 2 safe-state
+
+      - name: Error-passive and bus-off recovery through the HAL test hook
+        run: tools/dev.sh python3 tools/ecu_network.py --retries 2 bus-off
 
       - name: Upload build artifacts
         if: always()
@@ -109,9 +133,9 @@ jobs:
         with:
           name: firmware-builds
           path: |
-            build/native_sim/zephyr/zephyr.exe
-            build/nucleo_f446re/zephyr/zephyr.elf
-            build/nucleo_f446re/zephyr/zephyr.hex
+            build/native_sim_*/zephyr/zephyr.exe
+            build/nucleo_f446re_*/zephyr/zephyr.elf
+            build/nucleo_f446re_*/zephyr/zephyr.hex
             build/*/zephyr/.config
           include-hidden-files: true
           if-no-files-found: warn
@@ -122,4 +146,12 @@ jobs:
         with:
           name: host-test-coverage
           path: build/host-tests/coverage*
+          if-no-files-found: warn
+
+      - name: Upload network logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-logs
+          path: build/network-logs/
           if-no-files-found: warn

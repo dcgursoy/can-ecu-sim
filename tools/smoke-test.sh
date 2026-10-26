@@ -10,7 +10,7 @@
 # the timeout and all of them pass verification. Runs inside the dev container.
 set -euo pipefail
 
-EXE="${1:-build/native_sim/zephyr/zephyr.exe}"
+EXE="${1:-build/native_sim_sensor/zephyr/zephyr.exe}"
 IFACE="${2:-vcan0}"
 WANT="${3:-5}"
 ID_HEX="${4:-200}"        # SENSOR_HEARTBEAT

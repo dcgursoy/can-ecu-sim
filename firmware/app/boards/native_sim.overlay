@@ -5,10 +5,24 @@
  *     ./zephyr.exe --can-if=vcan1
  * which is how the two ECU processes end up on different bus segments when the
  * fault-injection gateway sits between them.
+ *
+ * The watchdog is a counter-based software watchdog over the simulator's
+ * counter device; the firmware reaches it through the same Zephyr watchdog API
+ * as the STM32 IWDG (alias watchdog0 on both boards).
  */
 / {
 	chosen {
 		zephyr,canbus = &can0;
+	};
+
+	aliases {
+		watchdog0 = &wdt0;
+	};
+
+	wdt0: wdt {
+		compatible = "zephyr,counter-watchdog";
+		counter = <&counter0>;
+		status = "okay";
 	};
 };
 

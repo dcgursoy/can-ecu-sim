@@ -77,7 +77,18 @@ if [[ -n "$BAD" ]]; then
 fi
 
 echo "== final image $IMAGE"
-SYMS="$("$NM" "$IMAGE")"
+# A freshly linked image on Docker Desktop's bind mount was once read back
+# without its symbols right after the build; re-read it for a few seconds
+# before concluding. Still fail-closed: an image without main/z_cstart fails.
+SYMS=""
+for attempt in 1 2 3; do
+    SYMS="$("$NM" "$IMAGE")"
+    if echo "$SYMS" | grep -qE ' [Tt] (main|z_cstart)$'; then
+        break
+    fi
+    echo "  image not readable yet (attempt $attempt), retrying" >&2
+    sleep 1
+done
 if ! echo "$SYMS" | grep -qE ' [Tt] (main|z_cstart)$'; then
     echo "ERROR: $IMAGE has no main/z_cstart symbol; not a Zephyr image?" >&2
     exit 2

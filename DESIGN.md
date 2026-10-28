@@ -361,8 +361,11 @@ frames are verified by `can/verify_candump.py`, and the three network demos
 (`run`, `safe-state`, `bus-off`) with their logs uploaded as `network-logs`. A
 demo that fails a criterion while the bus log shows a host scheduling stall is
 reported inconclusive and repeated up to twice; a failure without a stall is a
-real failure. Later phases add the pytest suite, static analysis and the Rust
-build to the same job.
+real failure. Phase 3 adds the gateway's fault-engine unit tests to the pytest
+step and, after the demos, the fifteen fault-injection scenarios on the
+two-segment topology (`tools/fault_scenarios.py`, section 12), judged and
+retried by the same rules. Later phases add the pytest suite, static analysis
+and the Rust build to the same job.
 
 ## 9. Phase plan and exit criteria
 
@@ -810,4 +813,181 @@ that log order equals execution order even if that default changes; the Nucleo
 build keeps the deferred default, in which the log processing thread at the
 lowest application priority does the UART writes and no application thread,
 interrupt or CAN callback ever blocks on the console.
+
+## 12. Phase 3: fault injection
+
+### 12.1 Two injection points
+
+Faults enter the network in two places, and both are needed. The **gateway**
+(`gateway/`) sits between two bus segments (`vcan0` with the sensor, `vcan1`
+with the controller) and acts on frames in flight: loss, latency and jitter,
+duplication, reordering, corruption, flooding. The firmware cannot tell it from
+a bus, so everything it shows is the behaviour of unmodified production code
+under a disturbed bus. The **firmware hooks** (`TEST_CONTROL`, id 0x7E0) make a
+node misbehave from the inside: a task that stops transmitting one message or
+its heartbeat, a sender whose CRC is wrong, a counter that skips or freezes, a
+thread that blocks. A bus cannot produce any of these, and they are the faults
+the protection scheme and the watchdog exist for. `docs/fault-model.md` maps
+each simulated fault to the hardware failure it stands for and lists what is
+not reproduced (arbitration, bus load, the physical layer).
+
+### 12.2 The gateway
+
+The relay is one Python process with two raw SocketCAN sockets, one bound to
+each interface, and one thread per direction that reads from one socket and
+writes to the other. This arrangement is what prevents a forwarding loop: a
+SocketCAN socket never receives the frames it sent itself
+(`CAN_RAW_RECV_OWN_MSGS` is off), so a frame the gateway puts on `vcan1`
+through the `vcan1` socket is invisible to the `vcan1` → `vcan0` direction,
+which reads from that same socket. No marker in the frames, no filtering by
+identifier, and the flood generator inherits the property: a flood sent through
+one socket stays on that segment. Raw sockets rather than `python-can` because
+the data path is one 16-byte `struct can_frame` and `select()`, and the
+project's later tooling (Phase 4) will use `python-can` where its decoding and
+logging add something.
+
+All decisions live in `gateway/faults.py`, a pure fault engine with no sockets,
+threads or wall clock: `submit(frame, now)` and `due(now)`. That is what makes
+it unit-testable with a fake clock (`gateway/test_faults.py`, 17 tests) and
+reproducible from a seed. Three modelling decisions shape it:
+
+* **A direction is a FIFO link.** Every frame is released at
+  `max(arrival + delay ± jitter, previous release)`, so latency and jitter alone
+  never reorder frames (a store-and-forward link cannot overtake itself) and
+  reordering is a fault of its own. The point is that each fault then has
+  exactly one observable consequence at the receiver, which is what lets the
+  scenarios check counters for equality instead of ranges.
+* **Reordering is a swap with the successor** of the same identifier, held
+  back at most `reorder_hold_ms` if no successor comes. One swap produces one
+  frame accepted with loss (counter +2) followed by one out-of-sequence
+  rejection, and the `reorder` scenario checks both counts equal the number of
+  swaps.
+* **Corruption is one flipped bit** in one data byte, the weakest corruption a
+  CRC must catch (`corrupt_crc_only` flips the CRC byte itself, a sender with a
+  wrong implementation). Phase 1 measured Hamming distance 4 for the chosen
+  polynomial over the protected bits, so every corrupted frame is rejected and
+  the `corrupt` scenario checks rejections equal corruptions exactly.
+
+The gateway takes JSON commands on stdin and answers on stdout, so a test
+driver reconfigures the faults while the ECUs keep running. Restarting the
+gateway between scenarios was the obvious alternative and is wrong: a 100 ms
+gap in the relay is itself a sensor-data timeout, and every scenario would
+start from a safe state.
+
+Measured on the baseline scenario (303 SENSOR_DATA frames matched by payload
+between the two captures, kernel timestamps): relay latency median 0.13 ms,
+p99 0.27 ms, maximum 0.30 ms (0.18 / 0.57 / 0.85 ms in an earlier run on the
+same host). A Python relay is adequate for a bus whose
+fastest message has a 10 ms period and a 35 ms timeout; it would not be for a
+1 ms control loop, which is why the phase logs label every number as coming
+from a simulated bus on a desktop OS.
+
+### 12.3 The firmware hooks
+
+The hooks are deliberately placed where the corresponding bug would be, so the
+receiver's reaction is the production reaction and not a test artefact:
+
+* `app::TxCounter` wraps the protocol's counter generator and is the only
+  place a counter value is produced. `SKIP_COUNTER` consumes a value without
+  transmitting it; `FREEZE_COUNTER` returns the previous value again. Both
+  roles obtained their counters from `proto::e2e::CounterGenerator` directly
+  before; they now go through `app::protect<Msg>()`, which protects a message
+  and applies the pending transmit-side faults (`CORRUPT_CRC` flips one bit of
+  the CRC byte after protection). The faults applied to a frame travel with it
+  to `transmit()`, which settles them: counted when the frame left the node,
+  handed back to their budget when it did not (bus-off, suppressed, driver
+  error), so a hook counter and the DBC's "upcoming transmitted frames" both
+  mean frames that reached the bus.
+* `app::transmit()` applies `SUPPRESS_HEARTBEAT` and `SUPPRESS_MESSAGE` and
+  returns `-ECANCELED`, counted as suppressed and not as a transmit error, so
+  the role's own transmit counters do not move: the frame never left, as with a
+  hung task.
+* `STALL_THREAD` is a `k_sleep()` at the top of the chosen thread's loop: a
+  thread blocked in a call that does not return, while the other threads keep
+  running. The feed decision is level-triggered: the supervisor withholds the
+  feed while a check-in is older than the 300 ms liveness window and feeds
+  again on the next check-in, so a stall resets the node only if it outlasts
+  the window plus the 1000 ms watchdog period, and a shorter one leaves the
+  warning flag and a skipped-feed count behind. The supervisor checks itself
+  in after its tick's work rather than before it, so a stalled supervisor is
+  judged by the same stale-mask logic on its next tick instead of hiding
+  behind a check-in made just before the mask is read; a stall longer than the
+  watchdog period ends in a reset without the supervisor's involvement, since
+  nobody feeds. The other classic hang, a thread spinning at high priority, is
+  not simulated; it would starve the supervisor itself and the watchdog would
+  bite the same way.
+
+All of it is under `CONFIG_APP_TEST_HOOKS` (default on for `native_sim`, off
+for the Nucleo). The Nucleo images grew by 208 and 152 bytes for the four hook
+counters in the status struct and the shell line that prints them; the hook
+logic is absent from those images and `TEST_CONTROL` is counted as an unknown
+frame. The pending faults sit in `Shared` under the one spinlock and are
+cleared by `RESET_FAULTS` and `ecu reset`, so a scenario cannot leak into the
+next one.
+
+### 12.4 How the scenarios are judged
+
+`tools/fault_scenarios.py` keeps one network up (both ECUs, the gateway,
+`candump` on each segment) and runs fifteen scenarios in sequence, each judged
+from three independent sources: the delta of each ECU's `ecu status` counters
+across the scenario, the gateway's own counters per direction and identifier,
+and the frames captured on both segments with kernel timestamps. Where a random
+fault can take more than one legitimate course, the expected outcome is derived
+from the capture rather than assumed: a run of lost SENSOR_DATA frames is a
+timeout only if the gap exceeds 35 ms, a run of corrupted frames only if it is
+three or more, so `drop-random` can assert `dropped == counted lost + frames
+inside timeout gaps` and `safe_state_entries == loss events on critical
+inputs` exactly, for any seed. A gap within 4 ms of a timeout limit is reported
+and not judged, because the firmware's own clock decides it. Host stalls are
+classified as in Phase 2, with one addition: a gap in the relayed copy of
+SENSOR_DATA on `vcan1` that `vcan0` does not show is a stalled gateway process,
+not a firmware fault, and makes the run inconclusive.
+
+### 12.5 Measured results (simulated bus on a desktop OS)
+
+From `tools/fault_scenarios.py`, seed 1; the full output is in
+`docs/phase-logs/phase3.md`, where a second run with seed 2 and the Phase 2
+demos are also recorded.
+
+| Scenario | Injected | Observed |
+|---|---|---|
+| baseline | nothing | all five periodic rates nominal on both segments; relay latency median 0.13 ms, p99 0.27 ms |
+| delay-jitter | 15 ± 5 ms both ways, 3 s | latency p1 10.2 / median 15.2 / p99 20.0 ms; no fault of any kind: latency is invisible to a period-based timeout |
+| duplicate | 20 % of sensor→controller frames twice | 34 duplicates, 34 repeated-counter rejections; COUNTER_FAULT_SEEN published in the heartbeat |
+| reorder | 20 % of SENSOR_DATA swapped | 39 swaps: 39 accepted with loss, 39 out-of-sequence rejections, no timeout |
+| corrupt | one bit in 10 % of frames | 20 corrupted, 20 CRC rejections; longest run 2, so no timeout and no state change |
+| corrupt-battery | every BATTERY_STATUS for 350 ms | 4 rejected; DEGRADED on the third (200 ms), RUNNING again |
+| drop-heartbeat | all SENSOR_HEARTBEAT for 1 s | SAFE_STATE 374.7 ms after the last heartbeat, NORMAL 514.6 ms after the first one again |
+| drop-random | 10 % both ways, 3 s | 29 / 4 / 17 frames lost on SENSOR_DATA / SENSOR_HEARTBEAT / CONTROLLER_COMMAND, every one accounted for by the receivers' counters; no run reached a timeout (with seed 2 one run of three did: one timeout, one safe-state entry, 36 = 33 + 3) |
+| flood | 2000 frames/s of id 0x001 on vcan1, 2 s | 4001 frames counted as unknown, 0 dropped, queue high-water mark 5 of 32 (15 in an earlier run), rates unaffected, nothing on vcan0 |
+| hook-corrupt-crc | x2, then x5 | 2 and 5 rejections; x5 is 40 ms without an accepted frame: one timeout, one safe-state entry |
+| hook-skip-counter | x3 | 3 accepted with loss, 3 frames counted lost, nothing rejected |
+| hook-freeze-counter | x2 | 2 repeated-counter rejections |
+| hook-suppress-heartbeat | 600 ms | 6 heartbeats suppressed; SAFE_STATE after 355.4 ms, NORMAL 514.9 ms after the first heartbeat again |
+| hook-suppress-message | CONTROLLER_COMMAND, 300 ms | 15 commands suppressed, 320 ms gap on the bus; sensor timeout at 70 ms, DEGRADED for 250 ms |
+| hook-stall-thread | tx thread, 1500 ms | feed withheld after the 300 ms liveness window, watchdog reset 1000 ms later: 1313 ms of silence, new boot banner, same process; controller safe state and recovery |
+
+### 12.6 What Phase 3 taught
+
+The boundary between tolerated and fatal is two frames: two lost or rejected
+SENSOR_DATA frames in a row are accounted for and forgotten, three are a
+timeout. With random faults that makes any fixed expectation wrong for some
+seed, which is why the scenarios derive their expectations from the capture;
+the first design, with fixed expectations, would have been a flaky test that
+passed on the author's seed.
+
+The watchdog reset on `native_sim` re-executes the simulator in the same
+process (`CONFIG_NATIVE_SIM_REBOOT`), keeping its pid, its `--can-if` argument
+and its stdin, so the shell and the test driver survive the reset and the log
+shows the second boot banner in place. The 1313 ms of silence decomposes into
+the 300 ms liveness window, during which the supervisor still feeds because the
+stalled thread's last check-in is not yet stale, the 1000 ms watchdog timeout
+from the last feed, and the reboot.
+
+A 2000 frames/s flood is handled entirely by the driver thread, the queue and
+the RX thread: no drop, high-water mark between 5 and 15 of 32 across runs,
+which says the queue depth has at least a factor of two of margin at that rate
+on this host and nothing about an MCU. On hardware the acceptance filter would keep those frames out of
+software altogether; that the `native_sim` driver accepts every standard frame
+is listed in `docs/fault-model.md` as a difference, not hidden by the scenario.
 

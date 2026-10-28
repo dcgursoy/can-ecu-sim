@@ -27,11 +27,15 @@ ctest --test-dir "$BUILD_DIR" --output-on-failure
 # Coverage of the library headers only (the tests and GoogleTest are excluded).
 # With -fkeep-inline-functions every translation unit emits its own copy of a
 # header function and may report it at a different line; merge by lowest line.
+# The trailing search path restricts the scan for .gcda files to this build
+# directory: without it gcovr walks the whole repository, including every
+# firmware build tree, which takes minutes on a bind-mounted filesystem.
 gcovr --root . --object-directory "$BUILD_DIR" \
     --filter 'firmware/lib/[a-z_]+/include/' \
     --merge-mode-functions merge-use-line-min \
     --print-summary \
     --txt "$BUILD_DIR/coverage.txt" \
     --html-details "$BUILD_DIR/coverage.html" \
-    --xml "$BUILD_DIR/coverage.xml"
+    --xml "$BUILD_DIR/coverage.xml" \
+    "$BUILD_DIR"
 echo "coverage report: $BUILD_DIR/coverage.txt"

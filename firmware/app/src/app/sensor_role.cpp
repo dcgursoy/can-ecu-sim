@@ -50,9 +50,9 @@ ecu::ProtectedReceiver<proto::ControllerCommand> g_command_rx;
 ecu::ProtectedReceiver<proto::ControllerHeartbeat> g_heartbeat_rx;
 proto::ControllerCommand g_last_command{};
 bool g_have_command = false;
-proto::e2e::CounterGenerator g_data_counter;
-proto::e2e::CounterGenerator g_battery_counter;
-proto::e2e::CounterGenerator g_heartbeat_counter;
+app::TxCounter g_data_counter;
+app::TxCounter g_battery_counter;
+app::TxCounter g_heartbeat_counter;
 std::uint32_t g_tx_data = 0;
 std::uint32_t g_tx_battery = 0;
 std::uint32_t g_tx_heartbeat = 0;
@@ -110,7 +110,7 @@ void periodic_tx(std::uint32_t tick, std::int64_t now_ms)
     data.set_speed_phys(g_model.speed_mps);
     data.set_yaw_rate_phys(g_model.yaw_rate_dps);
     data.set_accel_x_phys(g_model.accel_x_mps2);
-    if (transmit<proto::SensorData>(proto::e2e::protect(data, g_data_counter.next())) == 0) {
+    if (transmit<proto::SensorData>(app::protect(data, g_data_counter)) == 0) {
         ++g_tx_data;
     }
 
@@ -124,7 +124,7 @@ void periodic_tx(std::uint32_t tick, std::int64_t now_ms)
         battery.low_voltage = g_model.soc_pct < 25.0F ? 1 : 0;
         battery.over_temperature = g_model.temperature_c > 60.0F ? 1 : 0;
         battery.charging = 0;
-        if (transmit<proto::BatteryStatus>(proto::e2e::protect(battery, g_battery_counter.next())) == 0) {
+        if (transmit<proto::BatteryStatus>(app::protect(battery, g_battery_counter)) == 0) {
             ++g_tx_battery;
         }
     }

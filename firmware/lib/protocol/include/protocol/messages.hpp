@@ -1,5 +1,5 @@
 // GENERATED FILE, do not edit.
-// Source: can/network.dbc  (sha256 04c2dbe6e803b397)
+// Source: can/network.dbc  (sha256 c239c44a1c23952d)
 // Generator: can/gen_codec.py  (regenerate with `python3 can/gen_codec.py`)
 // Network version: 'can-ecu-sim network 1.0'
 #pragma once
@@ -110,6 +110,7 @@ enum class TestCommand : std::uint8_t {
     kSkipCounter = 6,
     kFreezeCounter = 7,
     kSuppressMessage = 8,
+    kStallThread = 9,
 };
 
 constexpr const char* to_string(TestCommand value)
@@ -124,6 +125,7 @@ constexpr const char* to_string(TestCommand value)
     case TestCommand::kSkipCounter: return "SKIP_COUNTER";
     case TestCommand::kFreezeCounter: return "FREEZE_COUNTER";
     case TestCommand::kSuppressMessage: return "SUPPRESS_MESSAGE";
+    case TestCommand::kStallThread: return "STALL_THREAD";
     }
     return "UNKNOWN";
 }
@@ -915,7 +917,7 @@ struct TestControl {
 
     std::uint16_t magic{};  ///< bits 0..15, raw 0..65535
     Node target_node{};  ///< bits 16..23, raw 0..255
-    TestCommand command{};  ///< bits 24..31, raw 0..255. See value table. arg0/arg1 semantics depend on the command.
+    TestCommand command{};  ///< bits 24..31, raw 0..255. See value table. Arguments: NOP, RESET_FAULTS none. INJECT_CAN_ERROR arg0 = number of simulated transmit error events (TEC +8 each; 16 reach error-passive, 32 bus-off). FORCE_BUS_OFF none. SUPPRESS_HEARTBEAT arg0 = duration in ms during which the node's heartbeat is not transmitted. CORRUPT_CRC arg0 = number of upcoming protected frames transmitted with a corrupted CRC byte. SKIP_COUNTER arg0 = number of upcoming protected frames whose rolling counter skips one value. FREEZE_COUNTER arg0 = number of upcoming protected frames that repeat the previous counter. SUPPRESS_MESSAGE arg0 = frame identifier, arg1 = duration in ms during which that message is not transmitted. STALL_THREAD arg0 = thread (0 receive, 1 transmit, 2 supervisor), arg1 = ms the thread blocks, as if stuck in a blocking call. The supervisor stops feeding the watchdog once the thread's check-in is older than the liveness window (300 ms) and feeds again when it checks in, so the node resets only if the stall outlasts the liveness window plus the watchdog timeout (about 1.3 s nominal; 1.0 to 2.2 s on the Nucleo, whose IWDG runs from the 17 to 47 kHz LSI); a shorter stall only sets the watchdog-warning flag and counts skipped feeds. A stalled supervisor feeds nothing, so the watchdog timeout alone decides its reset.
     std::uint16_t arg0{};  ///< bits 32..47, raw 0..65535
     std::uint16_t arg1{};  ///< bits 48..63, raw 0..65535
 

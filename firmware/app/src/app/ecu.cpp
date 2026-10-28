@@ -57,7 +57,34 @@ k_thread g_supervisor_thread;
 K_TIMER_DEFINE(g_tx_timer, nullptr, nullptr);
 K_TIMER_DEFINE(g_supervisor_timer, nullptr, nullptr);
 
-proto::e2e::CounterGenerator g_heartbeat_counter;  // used by the role through make_heartbeat()
+constexpr const char* kThreadNames[kThreadCount] = {"rx", "tx", "supervisor"};
+
+// STALL_THREAD test hook: block the calling thread for the requested time, as a
+// thread stuck in a blocking call would. The supervisor withholds the watchdog
+// feed while the thread's check-in is older than kLivenessWindowMs and feeds
+// again on its next check-in (run_watchdog is level-triggered, not latched),
+// so the node resets only when the stall outlasts the liveness window plus the
+// watchdog period; a shorter stall leaves kWatchdogWarning and wdt_skipped
+// behind. A stalled supervisor feeds nothing, so the watchdog period alone
+// decides its reset.
+void maybe_stall(ThreadId id)
+{
+#ifdef CONFIG_APP_TEST_HOOKS
+    const std::size_t idx = static_cast<std::size_t>(id);
+    std::uint32_t ms = 0;
+    {
+        Locked l(g_shared.lock);
+        ms = g_shared.stall_ms[idx];
+        g_shared.stall_ms[idx] = 0;
+    }
+    if (ms != 0U) {
+        LOG_WRN("test hook: %s thread blocked for %u ms", kThreadNames[idx], ms);
+        k_sleep(K_MSEC(ms));
+    }
+#else
+    (void)id;
+#endif
+}
 
 void on_can_state(proto::CanState state, std::uint8_t tec, std::uint8_t rec, void* /*user*/)
 {
@@ -92,6 +119,7 @@ void rx_thread_fn(void*, void*, void*)
 {
     can_frame frame{};
     for (;;) {
+        maybe_stall(ThreadId::kRx);
         check_in(ThreadId::kRx);
         // The timeout keeps the liveness check-in flowing when the bus is silent.
         if (k_msgq_get(&g_rx_queue, &frame, K_MSEC(cfg::kLivenessWindowMs / 4)) != 0) {
@@ -147,6 +175,7 @@ void tx_thread_fn(void*, void*, void*)
             Locked l(g_shared.lock);
             g_shared.tx_tick_overruns += expiries - 1U;
         }
+        maybe_stall(ThreadId::kTx);
         check_in(ThreadId::kTx);
         role::periodic_tx(tick, now_ms());
         ++tick;
@@ -309,13 +338,18 @@ void supervisor_thread_fn(void*, void*, void*)
     k_timer_start(&g_supervisor_timer, K_MSEC(cfg::kSupervisorTickMs), K_MSEC(cfg::kSupervisorTickMs));
     for (;;) {
         k_timer_status_sync(&g_supervisor_timer);
+        maybe_stall(ThreadId::kSupervisor);
         const std::int64_t now = now_ms();
-        check_in(ThreadId::kSupervisor);
         process_can_events(now);
         run_bus_off_recovery(now);
         run_timeouts(now);
         run_node_state(now);
         run_watchdog(now);
+        // Checked in after the work, so the next tick judges this one: a gap
+        // longer than the liveness window (a stalled supervisor) is seen by the
+        // same stale-mask logic as a stalled RX or TX thread instead of being
+        // hidden by a check-in made just before the mask is evaluated.
+        check_in(ThreadId::kSupervisor);
     }
 }
 
@@ -355,23 +389,109 @@ void note_rx_result(ecu::RxResult result)
     }
 }
 
-int transmit(std::uint32_t id, const std::uint8_t* data, std::size_t dlc)
+std::uint8_t TxCounter::next(AppliedFaults& applied)
 {
+    bool freeze = false;
+    bool skip = false;
+#ifdef CONFIG_APP_TEST_HOOKS
+    {
+        Locked l(g_shared.lock);
+        TxFaults& f = g_shared.tx_faults;
+        if (f.freeze_counter_remaining != 0U) {
+            --f.freeze_counter_remaining;
+            freeze = true;
+        } else if (f.skip_counter_remaining != 0U) {
+            --f.skip_counter_remaining;
+            skip = true;
+        }
+    }
+    applied.freeze = freeze;
+    applied.skip = skip;
+#else
+    (void)applied;
+#endif
+    if (freeze) {
+        return last_;  // a stuck sender: same counter as the previous frame
+    }
+    if (skip) {
+        (void)gen_.next();  // one counter value is never transmitted
+    }
+    last_ = gen_.next();
+    return last_;
+}
+
+void corrupt_crc_if_requested(std::uint8_t& crc_byte, AppliedFaults& applied)
+{
+#ifdef CONFIG_APP_TEST_HOOKS
+    bool corrupt = false;
+    {
+        Locked l(g_shared.lock);
+        TxFaults& f = g_shared.tx_faults;
+        if (f.corrupt_crc_remaining != 0U) {
+            --f.corrupt_crc_remaining;
+            corrupt = true;
+        }
+    }
+    applied.corrupt = corrupt;
+    if (corrupt) {
+        crc_byte = static_cast<std::uint8_t>(crc_byte ^ 0x01U);  // any single-bit error is detected
+    }
+#else
+    (void)crc_byte;
+    (void)applied;
+#endif
+}
+
+int transmit(std::uint32_t id, const std::uint8_t* data, std::size_t dlc, AppliedFaults applied)
+{
+    int err = 0;
     {
         Locked l(g_shared.lock);
         if (!g_shared.can_sm.tx_allowed()) {
-            return -ENETDOWN;
+            err = -ENETDOWN;
         }
+#ifdef CONFIG_APP_TEST_HOOKS
+        else {
+            TxFaults& f = g_shared.tx_faults;
+            const std::int64_t now = now_ms();
+            if ((id == role::Heartbeat::kId && now < f.suppress_heartbeat_until_ms) ||
+                (id == f.suppress_id && now < f.suppress_id_until_ms)) {
+                ++f.suppressed;
+                err = -ECANCELED;
+            }
+        }
+#endif
     }
-    can_frame frame{};
-    frame.id = id;
-    frame.dlc = static_cast<std::uint8_t>(dlc);
-    frame.flags = 0;
-    std::memcpy(frame.data, data, dlc);
-    const int err = g_can.send(frame);
     if (err == 0) {
+        can_frame frame{};
+        frame.id = id;
+        frame.dlc = static_cast<std::uint8_t>(dlc);
+        frame.flags = 0;
+        std::memcpy(frame.data, data, dlc);
+        err = g_can.send(frame);
+    }
+    const bool sent = err == 0;
+    {
         Locked l(g_shared.lock);
-        ++g_shared.tx_sent;
+        if (sent) {
+            ++g_shared.tx_sent;
+        }
+#ifdef CONFIG_APP_TEST_HOOKS
+        // Settle the faults applied by protect(): count them if the frame left
+        // the node, otherwise hand them back so they land on the next frame that does.
+        TxFaults& f = g_shared.tx_faults;
+        if (sent) {
+            f.corrupted += applied.corrupt ? 1U : 0U;
+            f.skipped += applied.skip ? 1U : 0U;
+            f.frozen += applied.freeze ? 1U : 0U;
+        } else {
+            f.corrupt_crc_remaining += applied.corrupt ? 1U : 0U;
+            f.skip_counter_remaining += applied.skip ? 1U : 0U;
+            f.freeze_counter_remaining += applied.freeze ? 1U : 0U;
+        }
+#else
+        (void)applied;
+#endif
     }
     return err;
 }
@@ -453,6 +573,12 @@ extern "C" void ecu_status_get(struct ecu_status* out)
         out->wdt_feeds = g_shared.wdt_feeds;
         out->wdt_skipped = g_shared.wdt_skipped;
         out->liveness_stale_mask = g_shared.liveness_stale_mask;
+#ifdef CONFIG_APP_TEST_HOOKS
+        out->hook_suppressed = g_shared.tx_faults.suppressed;
+        out->hook_corrupted = g_shared.tx_faults.corrupted;
+        out->hook_skipped = g_shared.tx_faults.skipped;
+        out->hook_frozen = g_shared.tx_faults.frozen;
+#endif
     }
     out->rx_queue_depth = cfg::kRxQueueDepth;
     out->rx_dropped = g_can.rx_dropped();
@@ -483,6 +609,10 @@ extern "C" void ecu_reset_faults(void)
         g_shared.node.reset(now);
         g_shared.error_flags = 0;
         g_shared.wdt_skipped = 0;
+#ifdef CONFIG_APP_TEST_HOOKS
+        g_shared.tx_faults = TxFaults{};
+        g_shared.stall_ms.fill(0);
+#endif
     }
     role::reset_stats();
 }

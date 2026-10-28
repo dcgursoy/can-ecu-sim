@@ -1,6 +1,7 @@
 /*
  * Shell commands: `ecu status` prints the node, CAN, traffic and watchdog state
- * with every error counter; `ecu reset` clears latched faults. Written in C
+ * with every error counter; `ecu reset` clears latched faults and, with test
+ * hooks, pending test faults. Written in C
  * because Zephyr's shell macros rely on C designated initialisers; the data
  * comes from the C++ application through app/status.h.
  */
@@ -49,6 +50,11 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "wdt: available=%d timeout_ms=%" PRIu32 " feeds=%" PRIu32 " skipped=%" PRIu32
 		    " stale_threads=0x%" PRIx32,
 		    s.wdt_available, s.wdt_timeout_ms, s.wdt_feeds, s.wdt_skipped, s.liveness_stale_mask);
+	if (s.test_hooks) {
+		shell_print(sh, "hooks: suppressed=%" PRIu32 " corrupted=%" PRIu32 " skipped=%" PRIu32
+			    " frozen=%" PRIu32,
+			    s.hook_suppressed, s.hook_corrupted, s.hook_skipped, s.hook_frozen);
+	}
 	shell_print(sh, "%s: %s", s.role, s.role_detail);
 	return 0;
 }
@@ -59,15 +65,16 @@ static int cmd_reset(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argv);
 	ecu_reset_faults();
 	shell_print(sh, "faults cleared: FAULT state, CAN recovery backoff, error_flags, watchdog skip count, "
-		    "per-message rx fault counters (cumulative tx/rx/bus-off counters kept)");
+		    "per-message rx fault counters%s (cumulative tx/rx/bus-off counters kept)",
+		    IS_ENABLED(CONFIG_APP_TEST_HOOKS) ? ", pending test faults and hook counters" : "");
 	return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_ecu,
 	SHELL_CMD(status, NULL, "Node, CAN, traffic and watchdog status with error counters", cmd_status),
 	SHELL_CMD(reset, NULL,
-		  "Clear latched faults (FAULT state, exhausted CAN recovery), error_flags and per-message "
-		  "RX fault counters",
+		  "Clear latched faults (FAULT state, exhausted CAN recovery), error_flags, per-message "
+		  "RX fault counters and, with test hooks, pending test faults and hook counters",
 		  cmd_reset),
 	SHELL_SUBCMD_SET_END);
 

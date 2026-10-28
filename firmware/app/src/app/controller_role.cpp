@@ -27,8 +27,8 @@ proto::SensorData g_sensor{};
 proto::BatteryStatus g_battery{};
 bool g_have_sensor = false;
 bool g_have_battery = false;
-proto::e2e::CounterGenerator g_command_counter;
-proto::e2e::CounterGenerator g_heartbeat_counter;
+app::TxCounter g_command_counter;
+app::TxCounter g_heartbeat_counter;
 proto::ControllerCommand g_last_command{};
 std::uint32_t g_tx_command = 0;
 std::uint32_t g_tx_heartbeat = 0;
@@ -160,7 +160,7 @@ void periodic_tx(std::uint32_t tick, std::int64_t now_ms)
             have_battery = g_have_battery && shared().monitor.alive(proto::BatteryStatus::kId);
         }
         const proto::ControllerCommand cmd = compute_command(state, sensor, have_sensor, battery, have_battery);
-        if (transmit<proto::ControllerCommand>(proto::e2e::protect(cmd, g_command_counter.next())) == 0) {
+        if (transmit<proto::ControllerCommand>(app::protect(cmd, g_command_counter)) == 0) {
             ++g_tx_command;
         }
         Locked l(shared().lock);

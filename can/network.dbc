@@ -128,7 +128,7 @@ CM_ BO_ 768 "Round-trip latency probe from the host. The addressed node (or ever
 CM_ BO_ 769 "Sensor ECU's answer to ECHO_REQUEST. turnaround is the responder's own receive-to-transmit time, which lets the host separate ECU processing time from bus and OS latency.";
 CM_ BO_ 770 "Controller ECU's answer to ECHO_REQUEST, same layout as SENSOR_ECHO_RESPONSE.";
 CM_ BO_ 2016 "Test-only control message. Accepted only by firmware built with the test hooks enabled, and only when magic equals 0xC0DE. Drives the software fault-injection hooks (Phase 3).";
-CM_ SG_ 2016 command "See value table. arg0/arg1 semantics depend on the command.";
+CM_ SG_ 2016 command "See value table. Arguments: NOP, RESET_FAULTS none. INJECT_CAN_ERROR arg0 = number of simulated transmit error events (TEC +8 each; 16 reach error-passive, 32 bus-off). FORCE_BUS_OFF none. SUPPRESS_HEARTBEAT arg0 = duration in ms during which the node's heartbeat is not transmitted. CORRUPT_CRC arg0 = number of upcoming protected frames transmitted with a corrupted CRC byte. SKIP_COUNTER arg0 = number of upcoming protected frames whose rolling counter skips one value. FREEZE_COUNTER arg0 = number of upcoming protected frames that repeat the previous counter. SUPPRESS_MESSAGE arg0 = frame identifier, arg1 = duration in ms during which that message is not transmitted. STALL_THREAD arg0 = thread (0 receive, 1 transmit, 2 supervisor), arg1 = ms the thread blocks, as if stuck in a blocking call. The supervisor stops feeding the watchdog once the thread's check-in is older than the liveness window (300 ms) and feeds again when it checks in, so the node resets only if the stall outlasts the liveness window plus the watchdog timeout (about 1.3 s nominal; 1.0 to 2.2 s on the Nucleo, whose IWDG runs from the 17 to 47 kHz LSI); a shorter stall only sets the watchdog-warning flag and counts skipped feeds. A stalled supervisor feeds nothing, so the watchdog timeout alone decides its reset.";
 
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 65535;
 BA_DEF_ BO_  "SafetyRelevant" ENUM  "No","Yes";
@@ -170,4 +170,4 @@ VAL_ 513 node_state 0 "BOOT" 1 "RUNNING" 2 "DEGRADED" 3 "SAFE_STATE" 4 "FAULT" ;
 VAL_ 513 can_state 0 "ERROR_ACTIVE" 1 "ERROR_PASSIVE" 2 "BUS_OFF" 3 "STOPPED" ;
 VAL_ 768 target_node 0 "ALL" 1 "SENSOR_ECU" 2 "CONTROLLER_ECU" ;
 VAL_ 2016 target_node 0 "ALL" 1 "SENSOR_ECU" 2 "CONTROLLER_ECU" ;
-VAL_ 2016 command 0 "NOP" 1 "RESET_FAULTS" 2 "INJECT_CAN_ERROR" 3 "FORCE_BUS_OFF" 4 "SUPPRESS_HEARTBEAT" 5 "CORRUPT_CRC" 6 "SKIP_COUNTER" 7 "FREEZE_COUNTER" 8 "SUPPRESS_MESSAGE" ;
+VAL_ 2016 command 0 "NOP" 1 "RESET_FAULTS" 2 "INJECT_CAN_ERROR" 3 "FORCE_BUS_OFF" 4 "SUPPRESS_HEARTBEAT" 5 "CORRUPT_CRC" 6 "SKIP_COUNTER" 7 "FREEZE_COUNTER" 8 "SUPPRESS_MESSAGE" 9 "STALL_THREAD" ;

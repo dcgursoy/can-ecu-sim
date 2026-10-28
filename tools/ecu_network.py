@@ -36,9 +36,10 @@ bind-mounted filesystem would stall the process in host time while it prints,
 which the peer ECU sees as a gap on the bus. After every attempt the logs and
 this script's own output are copied to build/network-logs/<subcommand>/.
 
-The EcuProcess and Candump classes are also the building blocks of the pytest
-fixtures (Phase 5). All timing numbers come from a simulated bus on a desktop
-OS, not from real-time hardware.
+The EcuProcess and Candump classes are also the building blocks of the fault
+scenarios on the gateway topology (tools/fault_scenarios.py, Phase 3) and of the
+pytest fixtures (Phase 5). All timing numbers come from a simulated bus on a
+desktop OS, not from real-time hardware.
 """
 
 from __future__ import annotations
@@ -166,7 +167,7 @@ def parse_status(text: str) -> dict:
         if line.startswith("rx ") and ":" in line:
             name = line[3:line.index(":")]
             out.setdefault("rx", {})[name] = {k: v.strip('"') for k, v in STATUS_KV_RE.findall(line)}
-        elif ":" in line and line.split(":", 1)[0] in ("node", "can", "tx", "wdt"):
+        elif ":" in line and line.split(":", 1)[0] in ("node", "can", "tx", "wdt", "hooks"):
             section = line.split(":", 1)[0]
             out.setdefault(section, {}).update({k: v.strip('"') for k, v in STATUS_KV_RE.findall(line)})
         elif line.startswith("rx:"):
@@ -545,11 +546,43 @@ def publish_logs(log_dir: pathlib.Path, cmd: str, attempt: int) -> None:
     print(f"logs copied to {dest}", file=sys.__stdout__)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--iface", default="vcan0")
     parser.add_argument("--log-dir", default="/tmp/can-ecu-sim-logs")
     parser.add_argument("--retries", type=int, default=0, help="repeat an INCONCLUSIVE run up to N times")
+
+
+def execute(args, cmd_name: str, fn) -> int:
+    """Run `fn(args)` with its output teed to summary.log, publish the logs, and
+    repeat an INCONCLUSIVE run up to args.retries times."""
+    log_dir = pathlib.Path(args.log_dir)
+    rc = EXIT_FAIL
+    for attempt in range(1, args.retries + 2):
+        log_dir.mkdir(parents=True, exist_ok=True)
+        for p in log_dir.glob("*.log"):
+            p.unlink()
+        tee = Tee(log_dir / "summary.log")
+        sys.stdout = tee
+        try:
+            if attempt > 1:
+                print(f"=== attempt {attempt} of {args.retries + 1}")
+            rc = fn(args)
+        except Exception:
+            traceback.print_exc(file=sys.stdout)
+            print("RESULT: FAIL (exception)")
+            rc = EXIT_FAIL
+        finally:
+            sys.stdout = tee._stdout
+            tee.close()
+            publish_logs(log_dir, cmd_name, attempt)
+        if rc != EXIT_INCONCLUSIVE:
+            break
+    return rc
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_common_arguments(parser)
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_run = sub.add_parser("run")
     p_run.add_argument("--duration", type=float, default=3.0)
@@ -565,30 +598,7 @@ def main() -> int:
     p_bo.add_argument("--duration", type=float, default=7.0)
     p_bo.set_defaults(fn=cmd_bus_off)
     args = parser.parse_args()
-
-    log_dir = pathlib.Path(args.log_dir)
-    rc = EXIT_FAIL
-    for attempt in range(1, args.retries + 2):
-        log_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("sensor.log", "controller.log", "bus.log", "summary.log"):
-            (log_dir / name).unlink(missing_ok=True)
-        tee = Tee(log_dir / "summary.log")
-        sys.stdout = tee
-        try:
-            if attempt > 1:
-                print(f"=== attempt {attempt} of {args.retries + 1}")
-            rc = args.fn(args)
-        except Exception:
-            traceback.print_exc(file=sys.stdout)
-            print("RESULT: FAIL (exception)")
-            rc = EXIT_FAIL
-        finally:
-            sys.stdout = tee._stdout
-            tee.close()
-            publish_logs(log_dir, args.cmd, attempt)
-        if rc != EXIT_INCONCLUSIVE:
-            break
-    return rc
+    return execute(args, args.cmd, args.fn)
 
 
 if __name__ == "__main__":

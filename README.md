@@ -7,10 +7,10 @@ Rust as a cross-language conformance check. Pure software: the ECUs are Zephyr
 `native_sim` processes on a Linux virtual CAN bus (`vcan`) inside a Docker dev
 container, so the whole network runs identically on any machine and in CI.
 
-> Status: **Phase 2 of 8** (firmware for both ECU roles). See
+> Status: **Phase 3 of 8** (fault injection: gateway and firmware hooks). See
 > [DESIGN.md](DESIGN.md) for every design decision and the phase plan.
 
-## What is here after Phase 2
+## What is here after Phase 3
 
 - `can/network.dbc` the network: sensor data (10 ms), battery status (100 ms),
   controller command (20 ms), a heartbeat per ECU, an echo request/response
@@ -37,10 +37,25 @@ container, so the whole network runs identically on any machine and in CI.
   drives their shells, measures safe-state entry and recovery and the bus-off
   recovery through the HAL hook), and the Docker Desktop on Windows `vcan`
   fix (`tools/wsl2/`).
+- `gateway/` the fault-injection gateway between `vcan0` and `vcan1`: a Python
+  relay that drops, delays and jitters, duplicates, reorders, corrupts and
+  floods, per direction and per identifier, from a seeded random generator,
+  reconfigurable at run time over a JSON control channel. Its fault engine is
+  pure and unit-tested with a fake clock (17 tests).
+- Firmware test hooks behind `CONFIG_APP_TEST_HOOKS` (on for `native_sim`,
+  off for the Nucleo): `TEST_CONTROL` can suppress the heartbeat or any
+  message, corrupt the CRC, skip or freeze the rolling counter, and block a
+  thread to prove the liveness monitor and the watchdog.
+- `tools/fault_scenarios.py` runs fifteen scenarios against one live network
+  (both ECUs, the gateway, `candump` on each segment) and judges each one from
+  the ECUs' counters, the gateway's counters and the captured frames, with the
+  expected outcome of random faults derived from the capture.
+  [docs/fault-model.md](docs/fault-model.md) maps every simulated fault to the
+  hardware failure it stands for and lists what is not reproduced.
 - `.github/workflows/ci.yml` builds the image, checks the generated code,
   runs the Python and C++ unit tests with coverage, builds all four firmware
-  images, checks them for allocators, and runs the smoke test and the three
-  network demos on vcan.
+  images, checks them for allocators, and runs the smoke test, the three
+  network demos and the fault scenarios on vcan.
 
 ## Quick start
 
@@ -112,11 +127,26 @@ Windows/Linux only.
    tools/dev.sh python3 tools/ecu_network.py bus-off
    ```
 
-5. **Run the unit tests:** the Python reference implementation, then the C++
-   libraries with coverage (report in `build/host-tests/coverage.txt`):
+   Put the fault-injection gateway between the ECUs (sensor on `vcan0`,
+   controller on `vcan1`) and run the fifteen fault scenarios, from a 15 ms
+   jittering relay to a flooded segment and a stalled firmware thread that
+   the watchdog resets (about 90 s; `--list` names them, `--scenarios a,b`
+   picks some, `--seed` changes the random faults):
 
    ```bash
-   tools/dev.sh python3 -m pytest -q can/
+   tools/dev.sh python3 tools/fault_scenarios.py
+   ```
+
+   The gateway also runs on its own, e.g. `python3 -m gateway.gateway --both
+   '{"drop": 0.1, "delay_ms": 5}'` inside the container, and prints its
+   counters when stopped.
+
+5. **Run the unit tests:** the Python reference implementation and the
+   gateway's fault engine, then the C++ libraries with coverage (report in
+   `build/host-tests/coverage.txt`):
+
+   ```bash
+   tools/dev.sh python3 -m pytest -q can/ gateway/
    ```
 
    ```bash
@@ -155,7 +185,12 @@ measured on a simulated bus on a desktop OS and will cite the command that
 produced it; raw data goes to `RESULTS.md`. The Phase 2 demo numbers (safe-state
 entry 54 ms after the last sensor frame, return to normal 525 ms after the
 restarted sensor's first heartbeat, bus-off recovery 103 ms) are in
-[docs/phase-logs/phase2.md](docs/phase-logs/phase2.md).
+[docs/phase-logs/phase2.md](docs/phase-logs/phase2.md); the Phase 3 scenario
+numbers (relay latency median 0.13 ms, safe state 375 ms after a lost
+heartbeat, every one of 50 randomly dropped frames accounted for by the
+counters, a stalled thread reset by the watchdog after 1313 ms of silence) are
+in [DESIGN.md §12.5](DESIGN.md#125-measured-results-simulated-bus-on-a-desktop-os)
+and [docs/phase-logs/phase3.md](docs/phase-logs/phase3.md).
 
 ## License
 

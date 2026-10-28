@@ -73,6 +73,12 @@ struct ecu_status {
 	uint32_t wdt_skipped;
 	uint32_t liveness_stale_mask;
 
+	/* Applied transmit-side test faults (zero in builds without test hooks). */
+	uint32_t hook_suppressed;
+	uint32_t hook_corrupted;
+	uint32_t hook_skipped;
+	uint32_t hook_frozen;
+
 	size_t rx_count;
 	struct ecu_rx_status rx[ECU_STATUS_MAX_RX];
 	char role_detail[ECU_STATUS_DETAIL_LEN];

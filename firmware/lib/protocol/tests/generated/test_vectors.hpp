@@ -1,5 +1,5 @@
 // GENERATED FILE, do not edit.
-// Source: can/network.dbc  (sha256 04c2dbe6e803b397)
+// Source: can/network.dbc  (sha256 c239c44a1c23952d)
 // Generator: can/gen_test_vectors.py  (seed 20261025, cantools 40.7.1)
 #pragma once
 
@@ -638,7 +638,7 @@ struct NodeEnum {
 struct TestCommandEnum {
     using Type = proto::TestCommand;
     static constexpr unsigned kBits = 8;
-    static constexpr std::array<EnumVector<proto::TestCommand>, 9> kNames = {{
+    static constexpr std::array<EnumVector<proto::TestCommand>, 10> kNames = {{
         {proto::TestCommand::kNop, "NOP"},
         {proto::TestCommand::kResetFaults, "RESET_FAULTS"},
         {proto::TestCommand::kInjectCanError, "INJECT_CAN_ERROR"},
@@ -648,6 +648,7 @@ struct TestCommandEnum {
         {proto::TestCommand::kSkipCounter, "SKIP_COUNTER"},
         {proto::TestCommand::kFreezeCounter, "FREEZE_COUNTER"},
         {proto::TestCommand::kSuppressMessage, "SUPPRESS_MESSAGE"},
+        {proto::TestCommand::kStallThread, "STALL_THREAD"},
     }};
 };
 

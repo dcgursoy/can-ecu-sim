@@ -6,6 +6,7 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/kernel.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -23,6 +24,7 @@
 namespace app {
 
 enum class ThreadId : std::size_t { kRx = 0, kTx = 1, kSupervisor = 2, kCount = 3 };
+constexpr std::size_t kThreadCount = static_cast<std::size_t>(ThreadId::kCount);
 
 /// Bits of the heartbeat's error_flags field (assignment documented in the DBC).
 enum ErrorFlag : std::uint8_t {
@@ -34,15 +36,33 @@ enum ErrorFlag : std::uint8_t {
     kTestHookActive = 1U << 5,
 };
 
+#ifdef CONFIG_APP_TEST_HOOKS
+/// Transmit-side fault injection requested through TEST_CONTROL (Phase 3).
+/// Guarded by Shared::lock. Each fault is applied in the common transmit path,
+/// so the roles' message assembly stays untouched by test code.
+struct TxFaults {
+    std::int64_t suppress_heartbeat_until_ms = 0;  ///< SUPPRESS_HEARTBEAT
+    std::uint32_t suppress_id = 0;                 ///< SUPPRESS_MESSAGE: identifier...
+    std::int64_t suppress_id_until_ms = 0;         ///< ...and until when
+    std::uint32_t corrupt_crc_remaining = 0;       ///< CORRUPT_CRC: frames left to corrupt
+    std::uint32_t skip_counter_remaining = 0;      ///< SKIP_COUNTER: frames left to skip a counter value
+    std::uint32_t freeze_counter_remaining = 0;    ///< FREEZE_COUNTER: frames left to repeat the counter
+    std::uint32_t suppressed = 0;                  ///< applied counts, for the shell and the tests
+    std::uint32_t corrupted = 0;
+    std::uint32_t skipped = 0;
+    std::uint32_t frozen = 0;
+};
+#endif
+
 /// State touched by more than one thread. Guarded by `lock`; hold it only for
-/// the few instructions it takes to read or update, never while logging or
-/// calling into the driver.
+/// the few instructions it takes to read or update, never while logging,
+/// formatting or calling into the driver.
 struct Shared {
     k_spinlock lock{};
     ecu::TimeoutMonitor<role::kMonitoredCount> monitor{role::kMonitored};
     ecu::NodeStateMachine node{role::kNodePolicy};
     ecu::CanErrorStateMachine can_sm{cfg::kBusOffPolicy};
-    ecu::Liveness<static_cast<std::size_t>(ThreadId::kCount)> liveness{cfg::kLivenessWindowMs};
+    ecu::Liveness<kThreadCount> liveness{cfg::kLivenessWindowMs};
     std::uint8_t error_flags = 0;
     std::uint32_t rx_frames = 0;
     std::uint32_t rx_unknown = 0;
@@ -54,6 +74,10 @@ struct Shared {
     std::uint32_t wdt_feeds = 0;
     std::uint32_t wdt_skipped = 0;
     std::uint32_t liveness_stale_mask = 0;
+#ifdef CONFIG_APP_TEST_HOOKS
+    TxFaults tx_faults{};
+    std::array<std::uint32_t, kThreadCount> stall_ms{};  ///< STALL_THREAD: pending block per thread
+#endif
 };
 
 /// Scoped spinlock.
@@ -81,9 +105,57 @@ void set_error_flag(ErrorFlag flag);
 /// Account a receive result in the error flags (CRC and counter faults).
 void note_rx_result(ecu::RxResult result);
 
+/// The transmit-side test faults applied to one frame between protection and
+/// transmission (empty without hooks). transmit() settles them: a fault is
+/// counted when the frame leaves the node and handed back to its budget when
+/// it does not (bus-off, suppressed, driver error), so the hook counters and
+/// the DBC's "upcoming transmitted frames" both mean frames that reached the bus.
+struct AppliedFaults {
+#ifdef CONFIG_APP_TEST_HOOKS
+    bool corrupt = false;
+    bool skip = false;
+    bool freeze = false;
+#endif
+};
+
+/// Rolling counter of one transmitted message type. With test hooks it also
+/// applies the SKIP_COUNTER (one value lost) and FREEZE_COUNTER (previous value
+/// repeated) faults, so a receiver sees exactly what a buggy or stuck sender
+/// would produce.
+class TxCounter {
+public:
+    std::uint8_t next(AppliedFaults& applied);
+
+private:
+    proto::e2e::CounterGenerator gen_{};
+    std::uint8_t last_ = 0;
+};
+
+/// Flip one bit of the CRC byte if a CORRUPT_CRC fault is pending (no-op without hooks).
+void corrupt_crc_if_requested(std::uint8_t& crc_byte, AppliedFaults& applied);
+
+/// A protected frame together with the test faults applied to it.
+template <class Msg>
+struct Protected {
+    typename Msg::Frame frame{};
+    AppliedFaults applied{};
+};
+
+/// Protect a message for transmission: counter, CRC, and the pending
+/// transmit-side faults. All roles go through here.
+template <class Msg>
+Protected<Msg> protect(const Msg& msg, TxCounter& counter)
+{
+    Protected<Msg> p{};
+    p.frame = proto::e2e::protect(msg, counter.next(p.applied));
+    corrupt_crc_if_requested(p.frame[0], p.applied);
+    return p;
+}
+
 /// Transmit through the HAL unless the CAN error state machine forbids it
-/// (bus-off backoff/recovery, latched failure). Returns 0 or -errno.
-int transmit(std::uint32_t id, const std::uint8_t* data, std::size_t dlc);
+/// (bus-off backoff/recovery, latched failure) or a test hook suppresses the
+/// message. Returns 0 or -errno (-ECANCELED when suppressed).
+int transmit(std::uint32_t id, const std::uint8_t* data, std::size_t dlc, AppliedFaults applied = {});
 
 template <class Msg>
 int transmit(const typename Msg::Frame& frame)
@@ -91,9 +163,15 @@ int transmit(const typename Msg::Frame& frame)
     return transmit(Msg::kId, frame.data(), Msg::kDlc);
 }
 
+template <class Msg>
+int transmit(const Protected<Msg>& p)
+{
+    return transmit(Msg::kId, p.frame.data(), Msg::kDlc, p.applied);
+}
+
 /// This node's heartbeat from the shared state, protected with the next counter.
 template <class Hb>
-typename Hb::Frame make_heartbeat(proto::e2e::CounterGenerator& counter, std::int64_t now)
+Protected<Hb> make_heartbeat(TxCounter& counter, std::int64_t now)
 {
     Hb hb{};
     {
@@ -105,7 +183,7 @@ typename Hb::Frame make_heartbeat(proto::e2e::CounterGenerator& counter, std::in
     }
     hb.uptime = static_cast<std::uint32_t>(now);
     hb.can_state = can().state();
-    return proto::e2e::protect(hb, counter.next());
+    return protect(hb, counter);
 }
 
 /// Initialise the HAL, queues and threads. Returns 0 or -errno.

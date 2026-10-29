@@ -63,6 +63,8 @@ def main() -> int:
         ("C++ unit tests (protocol, ecu_core)", junit(BUILD / "host-tests" / "host-tests.xml")),
         ("Library header coverage (GoogleTest)", coverage(BUILD / "host-tests" / "coverage.txt")),
         ("System test suite on vcan", junit(BUILD / "test-results" / "system-tests.xml")),
+        ("System test suite on vcan, Rust sensor ECU in the sensor's place (cross-language conformance)",
+         junit(BUILD / "test-results-rust" / "system-tests.xml")),
         ("Firmware coverage under the system suite", coverage(BUILD / "test-results" / "firmware-coverage.txt")),
         ("Static analysis", static_analysis()),
     ]
@@ -70,13 +72,14 @@ def main() -> int:
     print("| What | Result |\n|---|---|")
     for what, result in rows:
         print(f"| {what} | {result} |")
-    measurements = BUILD / "test-results" / "measurements.md"
-    if measurements.exists():
-        text = measurements.read_text()
-        table = text[text.index("| test |"):] if "| test |" in text else text
-        print("\n<details><summary>Measured values of the system suite (simulated bus on a desktop OS)</summary>\n")
-        print(table.rstrip())
-        print("\n</details>")
+    for results, title in (("test-results", "C++ sensor and controller"), ("test-results-rust", "Rust sensor, C++ controller")):
+        measurements = BUILD / results / "measurements.md"
+        if measurements.exists():
+            text = measurements.read_text()
+            table = text[text.index("| test |"):] if "| test |" in text else text
+            print(f"\n<details><summary>Measured values of the system suite, {title} (simulated bus on a desktop OS)</summary>\n")
+            print(table.rstrip())
+            print("\n</details>")
     return 0
 
 

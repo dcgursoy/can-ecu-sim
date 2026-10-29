@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = ["sensor-core", "sensor-vcan"]
+
+[workspace.package]
+version = "0.7.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.89"
+
+# One lint policy for both crates (each opts in with `[lints] workspace = true`):
+# no unsafe code anywhere, clippy's pedantic set with every warning an error in
+# CI (tools/build-rust.sh), minus the lints that argue with a CAN protocol.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# The numbers of a CAN protocol are its content, and its fields are the widths the DBC gives them.
+unreadable_literal = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+# Message, command and signal names appear in comments as the DBC spells them (TEST_CONTROL).
+doc_markdown = "allow"
+# tec/rec are the CAN error counters' names (ISO 11898-1).
+similar_names = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+struct_excessive_bools = "allow"
+
+[profile.release]
+# The adapter runs as a desktop process; debug info keeps backtraces useful.
+debug = 1

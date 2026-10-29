@@ -18,6 +18,7 @@ reproducible and `--check` is meaningful.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import pathlib
 import random
@@ -56,6 +57,66 @@ def cpp_double(value) -> str:
     return repr(float(value))
 
 
+@dataclasses.dataclass
+class MessageVectors:
+    message: object
+    rows: list  # (encoded bytes, raw values by signal name, physical values by signal name)
+
+
+@dataclasses.dataclass
+class Vectors:
+    """The oracle data, produced once and emitted for C++ (here) and for Rust (can/gen_rust.py)."""
+
+    messages: list  # MessageVectors in identifier order
+    crc: list       # (identifier, 8 bytes, crc)
+    e2e: list       # (identifier, plain frame, counter, protected frame)
+    enums: "OrderedDict"
+
+
+def collect_vectors(db) -> Vectors:
+    """Draw every vector from one seeded generator, in a fixed order, so both
+    emitters write the same data and --check stays meaningful."""
+    rng = random.Random(SEED)
+    messages = sorted(db.messages, key=lambda m: m.frame_id)
+    per_message = []
+    for msg in messages:
+        bounds = {s.name: raw_bounds(s) for s in msg.signals}
+        raws = [
+            {s.name: bounds[s.name][0] for s in msg.signals},
+            {s.name: bounds[s.name][1] for s in msg.signals},
+        ]
+        for _ in range(N_RANDOM):
+            raws.append({s.name: rng.randint(*bounds[s.name]) for s in msg.signals})
+        rows = []
+        for raw in raws:
+            data = msg.encode(raw, scaling=False, padding=False, strict=True)
+            if len(data) != msg.length:
+                raise SystemExit(f"{msg.name}: cantools produced {len(data)} bytes, DLC is {msg.length}")
+            decoded_raw = msg.decode(data, decode_choices=False, scaling=False)
+            if decoded_raw != raw:
+                raise SystemExit(f"{msg.name}: cantools raw round trip mismatch {decoded_raw} != {raw}")
+            phys = msg.decode(data, decode_choices=False, scaling=True)
+            rows.append((data, raw, phys))
+        per_message.append(MessageVectors(msg, rows))
+    crc = []
+    for _ in range(N_CRC_VECTORS):
+        can_id = rng.randint(0, 0x7FF)
+        data = bytes(rng.randint(0, 255) for _ in range(8))
+        crc.append((can_id, data, e2e_ref.frame_crc(can_id, data)))
+    e2e = []
+    for msg in messages:
+        if not is_yes(msg, "SafetyRelevant"):
+            continue
+        bounds = {s.name: raw_bounds(s) for s in msg.signals}
+        for counter in (0, 1, 7, 15):
+            raw = {s.name: rng.randint(*bounds[s.name]) for s in msg.signals}
+            raw["crc"] = 0
+            raw["counter"] = 0
+            plain = msg.encode(raw, scaling=False, padding=False, strict=True)
+            e2e.append((msg.frame_id, plain, counter, e2e_ref.protect(msg.frame_id, plain, counter)))
+    return Vectors(per_message, crc, e2e, collect_enums(db))
+
+
 def make_expected(msg, raw: dict) -> str:
     """A lambda building the expected struct field by field (C++17 has no designated initializers)."""
     cname = camel(msg.name)
@@ -71,10 +132,9 @@ def make_expected(msg, raw: dict) -> str:
 
 
 def gen(db, dbc_sha: str) -> str:
-    rng = random.Random(SEED)
+    vectors = collect_vectors(db)
     out: list[str] = []
     w = out.append
-    messages = sorted(db.messages, key=lambda m: m.frame_id)
 
     w("// GENERATED FILE, do not edit.")
     w("// Source: can/network.dbc  (sha256 %s)" % dbc_sha[:16])
@@ -89,16 +149,10 @@ def gen(db, dbc_sha: str) -> str:
     w("")
     w("namespace vectors {")
     w("")
-    for msg in messages:
+    for mv in vectors.messages:
+        msg = mv.message
         cname = camel(msg.name)
         nsig = len(msg.signals)
-        bounds = {s.name: raw_bounds(s) for s in msg.signals}
-        raws = [
-            {s.name: bounds[s.name][0] for s in msg.signals},
-            {s.name: bounds[s.name][1] for s in msg.signals},
-        ]
-        for _ in range(N_RANDOM):
-            raws.append({s.name: rng.randint(*bounds[s.name]) for s in msg.signals})
 
         w(f"/// Index of each signal of {msg.name} in the phys array (DBC order).")
         w(f"struct {cname}Idx {{")
@@ -112,15 +166,8 @@ def gen(db, dbc_sha: str) -> str:
         w(f"    std::array<double, {nsig}> phys{{}};  ///< cantools' scaled decode of bytes")
         w("};")
         w("")
-        w(f"inline const std::array<{cname}Vector, {len(raws)}> k{cname} = {{{{")
-        for raw in raws:
-            data = msg.encode(raw, scaling=False, padding=False, strict=True)
-            if len(data) != msg.length:
-                raise SystemExit(f"{msg.name}: cantools produced {len(data)} bytes, DLC is {msg.length}")
-            decoded_raw = msg.decode(data, decode_choices=False, scaling=False)
-            if decoded_raw != raw:
-                raise SystemExit(f"{msg.name}: cantools raw round trip mismatch {decoded_raw} != {raw}")
-            phys = msg.decode(data, decode_choices=False, scaling=True)
+        w(f"inline const std::array<{cname}Vector, {len(mv.rows)}> k{cname} = {{{{")
+        for data, raw, phys in mv.rows:
             phys_list = ", ".join(cpp_double(phys[s.name]) for s in msg.signals)
             w(f"    {{{cpp_bytes(data)}, {make_expected(msg, raw)}, {{{phys_list}}}}},")
         w("}};")
@@ -135,10 +182,8 @@ def gen(db, dbc_sha: str) -> str:
     w("};")
     w("")
     w(f"inline constexpr std::array<CrcVector, {N_CRC_VECTORS}> kCrc = {{{{")
-    for _ in range(N_CRC_VECTORS):
-        can_id = rng.randint(0, 0x7FF)
-        data = bytes(rng.randint(0, 255) for _ in range(8))
-        w(f"    {{0x{can_id:03X}U, {cpp_bytes(data)}, 0x{e2e_ref.frame_crc(can_id, data):02X}}},")
+    for can_id, data, crc in vectors.crc:
+        w(f"    {{0x{can_id:03X}U, {cpp_bytes(data)}, 0x{crc:02X}}},")
     w("}};")
     w("")
 
@@ -151,18 +196,8 @@ def gen(db, dbc_sha: str) -> str:
     w("    std::array<std::uint8_t, 8> protected_frame{};")
     w("};")
     w("")
-    e2e_rows = []
-    for msg in messages:
-        if not is_yes(msg, "SafetyRelevant"):
-            continue
-        bounds = {s.name: raw_bounds(s) for s in msg.signals}
-        for counter in (0, 1, 7, 15):
-            raw = {s.name: rng.randint(*bounds[s.name]) for s in msg.signals}
-            raw["crc"] = 0
-            raw["counter"] = 0
-            plain = msg.encode(raw, scaling=False, padding=False, strict=True)
-            protected = e2e_ref.protect(msg.frame_id, plain, counter)
-            e2e_rows.append(f"    {{0x{msg.frame_id:03X}U, {cpp_bytes(plain)}, {counter}, {cpp_bytes(protected)}}},")
+    e2e_rows = [f"    {{0x{can_id:03X}U, {cpp_bytes(plain)}, {counter}, {cpp_bytes(protected)}}},"
+                for can_id, plain, counter, protected in vectors.e2e]
     w(f"inline constexpr std::array<E2eVector, {len(e2e_rows)}> kE2e = {{{{")
     out.extend(e2e_rows)
     w("}};")
@@ -177,7 +212,7 @@ def gen(db, dbc_sha: str) -> str:
     w("    const char* label{};")
     w("};")
     w("")
-    for name, (choices, length) in collect_enums(db).items():
+    for name, (choices, length) in vectors.enums.items():
         w(f"struct {name}Enum {{")
         w(f"    using Type = proto::{name};")
         w(f"    static constexpr unsigned kBits = {length};")

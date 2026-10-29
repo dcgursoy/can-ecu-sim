@@ -1,0 +1,20 @@
+[package]
+name = "sensor-vcan"
+description = "The sensor ECU on Linux SocketCAN: the std adapter around sensor-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "sensor-vcan"
+path = "src/main.rs"
+
+[dependencies]
+sensor-core = { path = "../sensor-core" }
+socketcan = "3"
+libc = "0.2"
+
+[lints]
+workspace = true

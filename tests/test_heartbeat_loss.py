@@ -107,7 +107,8 @@ def test_stalled_thread_is_reset_by_the_watchdog(net, measure):
         log = firmware_log(net.sensor.log_path, before.sensor_log, "test hook", "watchdog not fed")
         t_block = next((t for t, line in log if "thread blocked" in line), None)
         t_not_fed = next((t for t, line in log if "watchdog not fed" in line), None)
-        banner = fs.log_since(net.sensor.log_path, before.sensor_log, "Booting Zephyr")
+        # Both sensor builds print a "*** Booting ..." banner: Zephyr its own, the Rust adapter one of its own.
+        banner = fs.log_since(net.sensor.log_path, before.sensor_log, "*** Booting")
         uptime = fs.ival(after.sensor, "ecu", "uptime_ms")
         # The rebooted process's uptime dates its reboot in host time (the status
         # was read within a few ms of t_status), which splits the silence into the

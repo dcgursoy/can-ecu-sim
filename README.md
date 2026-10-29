@@ -4,16 +4,17 @@
 
 A simulated two-ECU CAN network on Zephyr RTOS, written in C++17, with a Python
 fault-injection gateway, host tooling, an automated pytest suite, CI that also
-builds the firmware for an STM32 Nucleo-F446RE, and (Phase 7) one ECU ported to
-Rust as a cross-language conformance check. Pure software: the ECUs are Zephyr
-`native_sim` processes on a Linux virtual CAN bus (`vcan`) inside a Docker dev
-container, so the whole network runs identically on any machine and in CI.
+builds the firmware for an STM32 Nucleo-F446RE, and the sensor ECU ported to
+Rust (a `no_std` core under a SocketCAN adapter) as a cross-language conformance
+check. Pure software: the ECUs are Zephyr `native_sim` processes, or the Rust
+sensor, on a Linux virtual CAN bus (`vcan`) inside a Docker dev container, so
+the whole network runs identically on any machine and in CI.
 
-> Status: **Phase 6 of 8** (CI complete: static analysis clean, every report an artifact). See
+> Status: **Phase 7 of 8** (the sensor ECU re-implemented in Rust passes the unchanged system suite against the C++ controller). See
 > [DESIGN.md](DESIGN.md) for every design decision and the phase plan, and
 > [RESULTS.md](RESULTS.md) for the raw data behind every number below.
 
-## What is here after Phase 6
+## What is here after Phase 7
 
 - `can/network.dbc` the network: sensor data (10 ms), battery status (100 ms),
   controller command (20 ms), a heartbeat per ECU, an echo request/response
@@ -90,17 +91,35 @@ container, so the whole network runs identically on any machine and in CI.
   the application is clang-tidy's alone). Every finding is an error
   (`.clang-tidy` lists each disabled check with its reason; the inline
   suppressions carry theirs).
+- `rust/` the sensor ECU a second time, in Rust. `sensor-core` is a `no_std`,
+  allocation-free crate: the codec generated from the DBC by `can/gen_rust.py`,
+  CRC-8 and rolling counter, the six state machines ported from `ecu_core`
+  with their unit tests, and the sensor application as a "sans-IO" state
+  machine that takes frames, ticks and the time and returns frames to send,
+  events to log and the watchdog decision (34 unit tests with a fake clock,
+  6 conformance tests against the cantools and Python-reference vectors the
+  C++ codec is checked with; cross-compiled for `thumbv7em-none-eabihf` in
+  CI). `sensor-vcan` is the thin `std` adapter on the `socketcan` crate: five
+  threads, Zephyr's log format and the same `ecu status` shell, a software
+  watchdog that re-executes the process. `tools/build-rust.sh` is the gate
+  (rustfmt, clippy pedantic as errors, tests, release build, cross-compile).
+  The unchanged system suite passes with the Rust sensor in the sensor's
+  place (`tools/run-system-tests.sh --results build/test-results-rust
+  --sensor-exe rust/target/release/sensor-vcan`); DESIGN.md §16 explains the
+  port and the main differences from the C++ version.
 - `.github/workflows/ci.yml` builds the image, checks the generated code, runs
   the Python and C++ unit tests with coverage, builds all four firmware images,
-  checks them for allocators, runs the static analysis, then on vcan the smoke
-  test, the three network demos, the fault scenarios, the recorded run with the
-  host tools and the system test suite on the instrumented builds. Every suite
-  writes a JUnit report; the artifacts are the firmware images, the C++ test
-  report and coverage, the static-analysis logs, the network logs and the
-  system suite's results with the firmware coverage, and a job summary puts
-  the test counts, both coverage figures, the static-analysis verdict and the
-  suite's measured values on the run page. Superseded runs are cancelled;
-  Dependabot keeps the actions current.
+  checks them for allocators, runs the static analysis, lints, tests and
+  cross-compiles the Rust sensor ECU, then on vcan the smoke test, the three
+  network demos, the fault scenarios, the recorded run with the host tools,
+  the system test suite on the instrumented builds and the same suite again
+  with the Rust sensor in the sensor's place. Every suite writes a JUnit
+  report; the artifacts are the firmware images and the Rust sensor binary,
+  the C++ test report and coverage, the static-analysis logs, the network
+  logs and both suite runs' results (the C++ one with the firmware coverage),
+  and a job summary puts the test counts, both coverage figures, the
+  static-analysis verdict and both runs' measured values on the run page.
+  Superseded runs are cancelled; Dependabot keeps the actions current.
 
 ## Quick start
 
@@ -260,9 +279,23 @@ Windows/Linux only.
    tools/dev.sh tools/run-system-tests.sh --coverage
    ```
 
+9. **Build and test the Rust sensor ECU, then run the unchanged suite with it
+   in the sensor's place** (rustfmt, clippy, the unit and conformance tests,
+   the release build and the `thumbv7em-none-eabihf` cross-compile, about a
+   minute; then the 23 tests, about 90 s, results in `build/test-results-rust/`):
+
+   ```bash
+   tools/dev.sh tools/build-rust.sh
+   ```
+
+   ```bash
+   tools/dev.sh tools/run-system-tests.sh --results build/test-results-rust --sensor-exe rust/target/release/sensor-vcan
+   ```
+
 To poke around interactively, `tools/dev.sh` with no arguments opens a shell in
 the container; inside it `tools/vcan-up.sh` creates `vcan0` and `vcan1`, then
-`build/native_sim_sensor/zephyr/zephyr.exe --can-if=vcan0 &` and
+`build/native_sim_sensor/zephyr/zephyr.exe --can-if=vcan0 &` (or the Rust
+sensor, `rust/target/release/sensor-vcan --can-if=vcan0 &`) and
 `build/native_sim_controller/zephyr/zephyr.exe --can-if=vcan0` start the ECUs
 (type `ecu status` at the prompt), and `candump vcan0` shows the traffic. Each
 `tools/dev.sh <cmd>` call starts a fresh container with its own network
@@ -319,6 +352,10 @@ host's scheduler and the simulator's 1 ms driver poll and vary from run to run
 | Reordered SENSOR_DATA rejected out of sequence | 31 swaps: 31 out-of-sequence rejections, 31 accepted with loss, 31 lost | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
 | SENSOR_DATA period under the suite (10 ms) | mean 10.001 ms, std 0.109 ms, p99 10.3 ms, min 9.4 ms, max 10.5 ms | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
 | Firmware clock against bus time | 1.000 firmware ms per host ms, largest deviation 0.84 ms over 3 s | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| The unchanged suite with the Rust sensor ECU in the sensor's place | 23 of 23 passed (86.5 s), every count the same as with the C++ sensor; controller SAFE_STATE 46.5 ms after the last SENSOR_DATA, NORMAL 516.4 ms after the first again; a lost CONTROLLER_COMMAND seen by the Rust sensor 143.1 ms after the last frame | `tools/dev.sh tools/run-system-tests.sh --results build/test-results-rust --sensor-exe rust/target/release/sensor-vcan` | [RESULTS.md §3](RESULTS.md#3-phase-7-the-same-suite-with-the-rust-sensor-ecu-in-the-sensors-place) |
+| Rust sensor: SENSOR_DATA period (10 ms) and clock | mean 10.000 ms, std 0.050 ms, p99 10.1 ms, max 10.4 ms (C++ sensor: std 0.109, p99 10.3); 1.000 firmware ms per host ms, largest deviation 0.06 ms | same | same |
+| Rust sensor: stalled transmit thread, software watchdog | feed withheld 305.1 ms after the stall, reset 1313.7 ms after the last frame, first frame 9.7 ms after the re-exec (1323.3 ms of silence in all); same pid, controller safe state once | same | same |
+| Rust sensor: killed and restarted | controller SAFE_STATE 44.5 ms after its last SENSOR_DATA; first frame 15.5 ms after the process start; NORMAL 521.5 ms after its first heartbeat; counters from zero accepted | same | same |
 
 ## License
 

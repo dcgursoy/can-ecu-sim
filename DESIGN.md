@@ -369,8 +369,7 @@ retried by the same rules. Phase 4 adds the host tools' unit tests (on
 python-can's in-process virtual interface) to the pytest step and, last, the
 recorded run of the plain-bus network through the logger, the live decoder and
 the echo probe with the analysis of the recording (`tools/record_and_analyze.py`,
-section 13.5). Phase 5 adds the system test suite on the instrumented builds as the last `vcan` step, with its JUnit report, measurements, logs and firmware coverage uploaded as the `system-tests` artifact (section 14). Later phases add static analysis and the Rust
-build to the same job.
+section 13.5). Phase 5 adds the system test suite on the instrumented builds as the last `vcan` step, with its JUnit report, measurements, logs and firmware coverage uploaded as the `system-tests` artifact (section 14). Phase 6 adds the static analysis and the reports of section 15. Phase 7 adds the Rust gate (rustfmt, clippy, tests, release build, the `thumbv7em-none-eabihf` cross-compile) after the static analysis and, as the last `vcan` step, the suite's second run with the Rust sensor in the sensor's place, uploaded as `test-results-rust` (section 16).
 
 ## 9. Phase plan and exit criteria
 
@@ -383,7 +382,7 @@ build to the same job.
 | 4 | logger, live decoder, analysis | bus load, period/jitter and echo RTT percentiles reported from a recorded run |
 | 5 | pytest suite, unit tests of the protocol and state-machine code with coverage, firmware coverage under the suite (built as planned except that the kernel-dependent code is covered by instrumented `native_sim` builds under the suite instead of a `ztest` application, section 14.7) | the seven test groups pass and print measured values; coverage reported (the protocol library's host tests are Phase 1) |
 | 6 | CI complete (section 15) | both targets built, all tests run, clang-tidy/cppcheck clean, artifacts uploaded |
-| 7 | Rust sensor ECU | passes the unchanged pytest suite against the C++ controller; `no_std` crate cross-compiles |
+| 7 | Rust sensor ECU (section 16) | passes the unchanged pytest suite against the C++ controller; `no_std` crate cross-compiles (met: 23 of 23 in section 16.5, `thumbv7em-none-eabihf` built in CI) |
 | 8 | README, DESIGN, RESULTS | every number in the README traceable to a command and a raw log |
 
 ## 10. Phase 1: network definition, protection scheme and generated codec
@@ -1561,3 +1560,360 @@ their current majors' latest releases, and the README carries the badge.
   `WarningsAsErrors: '*'` and `--error-exitcode=1` the analysis cannot drift:
   a new finding is a failed build, and the choice between fixing it and
   suppressing it with a reason is made in the pull request that introduced it.
+
+## 16. Phase 7: the sensor ECU in Rust
+
+### 16.1 What was ported and how it is cut
+
+The sensor ECU exists twice from this phase on: the Zephyr application of
+section 11 and a Rust implementation in `rust/`, two crates in one Cargo
+workspace:
+
+- `sensor-core`, a `no_std`, allocation-free library: the message codec
+  generated from `can/network.dbc` by `can/gen_rust.py` (one struct per
+  message with the raw signal values, `to_frame`/`from_frame`/`from_buffer`,
+  the enums with their DBC labels, the message table), the bit-level codec
+  helpers, CRC-8H2F and the rolling counter on both the sending and the
+  receiving side, the six state machines of `firmware/lib/ecu_core`
+  (timeout monitor, protected receiver, node state machine, CAN error state
+  machine with the bus-off policy, the ISO 11898-1 error-counter model of the
+  simulated controller, thread liveness), each with its C++ unit tests ported,
+  and `sensor::SensorEcu`, the sensor application itself: the deterministic
+  vehicle model, the transmit scheduler with its three messages and their
+  slots, the receive dispatch, the `TEST_CONTROL` handler with every hook
+  (suppress, corrupt, skip, freeze, stall, inject, force bus-off, reset),
+  the supervisor's five jobs and the status snapshot. Its only dependency is
+  `libm` (sine and cosine for the model; `core` has no transcendentals).
+- `sensor-vcan`, the `std` adapter that runs the core on a Linux SocketCAN
+  interface through the `socketcan` crate (3.6): it owns what the firmware
+  gets from the RTOS and the HAL, five OS threads (receive, 10 ms transmit
+  tick, 5 ms supervisor tick, the shell on stdin, the watchdog), the socket,
+  the clock and the console, and nothing of the protocol.
+
+The cut between the two is the "sans-IO" one: `SensorEcu` never reads a
+socket, a clock or a pin. The adapter calls `on_frame(id, data, now_ms)` for
+every received frame and gets back what to do (answer an echo, or nothing),
+`tx_tick(tick, now_ms, send)` every 10 ms with a callback that puts a frame on
+the bus and reports busy or rejected, and `supervisor_tick(now_ms, emit)`
+every 5 ms, which returns the one decision the hardware needs (feed the
+watchdog or not) and hands every state change to the `emit` callback as a
+typed `Event` (CAN state change, recovery attempt, timeout, node state,
+watchdog warning, test-control action). Time is a parameter everywhere, so the
+whole ECU, including the bus-off recovery sequence and the watchdog decision,
+runs under a unit test with a fake clock in zero wall time; the eight tests
+in `sensor.rs` boot the node, lose and recover the command, corrupt and skip
+counters, force a bus-off and watch the backoff, stall a thread past the
+liveness window and answer an echo, in a few milliseconds. The C++ firmware
+has the same split in principle (section 11.1: libraries host-tested, the
+application under Zephyr) but its application layer is written against the
+kernel; the Rust port moves the application into the testable half and leaves
+the adapter with nothing worth a unit test of its own, which the system suite
+then covers.
+
+The crate compiles for `thumbv7em-none-eabihf`, the Nucleo-F446RE's Cortex-M4F
+with hardware floating point, in CI on every run (`tools/build-rust.sh`):
+that build has no `std` to fall back on, so anything that needed an allocator,
+a float formatter or an OS would fail to link there. It is an `rlib` of
+867 KB (unstripped, with the metadata), not a firmware image: a board image
+would need a HAL crate for the F446's bxCAN and IWDG and a Cortex-M runtime,
+which is the Rust counterpart of a Zephyr board port and out of this
+project's scope. What the cross-compile proves is the property the phase
+asked for: the protocol logic has no dependency on the host.
+
+### 16.2 The generated codec and the conformance vectors
+
+`can/gen_rust.py` is a second emitter over the same DBC model as
+`can/gen_codec.py` (it imports the C++ generator's helpers: attribute
+parsing, enum collection, raw bounds, validation) and `tools/gen-all.sh
+--check` keeps its output committed and current, as for the C++ header. The
+Rust shape differs where the language does:
+
+- A signal with a value table is a plain integer field in the message struct,
+  with `<signal>_enum()` returning `Option<Enum>` and `set_<signal>(Enum)`
+  beside it. In C++ the field is the `enum class` itself, and a received value
+  outside the table is an enumerator without a name that `to_string` renders
+  as `"UNKNOWN"`; a Rust enum cannot hold a value outside its variants without
+  undefined behaviour, so the raw value stays raw and the conversion is
+  explicit and fallible. `name_of(raw)` gives the label or `"UNKNOWN"` for
+  logging, as in C++.
+- `to_frame` and `from_frame` are `const fn`, the counterpart of the C++
+  `constexpr`, and the physical-unit accessors take and return `f32` with the
+  same rounding rule (half away from zero, saturated to the raw range, NaN to
+  the raw minimum) implemented once in `codec::phys_to_raw`.
+- The message table and the per-message constants (`ID`, `DLC`, `CYCLE_MS`,
+  `SAFETY_RELEVANT`, `TEST_ONLY`, `NAME`) are associated constants of a
+  `Message` trait, so the protected receiver and the transmit path are generic
+  over the message type exactly as the C++ templates are.
+
+The vectors are shared, not re-derived: `can/gen_test_vectors.py` was split
+so that one function (`collect_vectors`) draws every vector from the seeded
+generator (every message at its raw minimum, maximum and 30 random points,
+encoded and decoded by cantools raw and scaled; 64 random CRC frames and the
+protected frames of every safety-relevant message from `can/e2e_ref.py`; the
+enum tables), and two emitters write the same data for C++ and for Rust. The
+C++ header is byte-for-byte what it was. `rust/sensor-core/tests/conformance.rs`
+checks the Rust codec against those vectors (encode equals cantools' bytes,
+decode equals the raw values, the scaled accessors equal cantools' doubles,
+the physical setters reproduce the raw values, a short buffer is refused),
+the CRC and the protected frames against the Python reference, every single-bit
+error in the payload and every single-bit error in the identifier detected,
+and every enum table complete. The same oracle therefore stands behind three
+implementations: C++ and Rust both agree with cantools and with the Python
+reference, and so with each other, before either sends a frame.
+
+### 16.3 The state machines and the application core
+
+Each of the six state machines is a line-for-line port of its C++ header,
+same states, same reasons, same counters, same `start`/`update`/`reset`
+protocol, and its unit tests are the C++ tests translated. Two of the ported
+tests were wrong when first run, both in the port of the test rather than of
+the code (an out-of-range counter chosen so that the masked value was out of
+sequence rather than skipped; a consecutive-reject count that missed the
+out-of-sequence reject before the CRC and DLC ones); the implementations were
+right and the tests were corrected to what the C++ tests assert.
+
+`SensorEcu` holds what `ecu.cpp`, `sensor_role.cpp`, `test_control.cpp` and
+the HAL's simulated controller hold between them, under the same rules:
+
+- the transmit path protects every frame (counter, CRC, then the pending
+  transmit faults), refuses to send while the CAN error state machine forbids
+  it or the simulated controller is bus-off, counts a suppressed frame, and
+  settles the applied faults the way the Phase 3 review required (counted
+  when the frame left the node, handed back to the budget when it did not),
+  so `hooks: corrupted=N` means N bad frames on the bus;
+- the simulated controller is the same error-counter model (TEC += 8 per
+  injected transmit error, healed by one per real successful transmission,
+  bus-off at 256), recovers after the modelled 128 × 11 bit times (3 ms) when
+  the recovery is requested, and refuses a recovery request while it is not
+  bus-off, as the SocketCAN driver refuses one on a virtual bus;
+- the supervisor runs the same five jobs in the same order (controller
+  events, then one level-triggered poll of the controller state, bus-off
+  recovery, timeouts with the receivers' sequence reset on a loss, the node
+  state machine, the watchdog decision with the once-per-second warning);
+- `RESET_FAULTS` and `ecu reset` clear what the firmware clears and keep the
+  cumulative counters.
+
+The simulated controller's recovery is modelled as a due time rather than a
+kernel delayed work item, which is the one place the port is simpler than the
+original: the supervisor tick checks whether the recovery is due on its way
+in, and the state machine sees the resulting `ERROR_ACTIVE` event exactly as
+it sees the HAL's.
+
+The reduced adversarial review of the crate (one finder, one verifier per
+finding; `docs/phase-logs/phase7.md` section 4) confirmed three low-severity
+divergences from the C++ that the suite could not see, all fixed before the
+commit: the suppression hook was tested after the simulated controller's
+bus-off block instead of before it, so a suppressed frame of a bus-off sensor
+was counted as blocked; the fault budgets and event counters used checked
+additions, a panic in a debug build where the C++ wraps, now saturating
+throughout; and the simulated recovery event was stamped with the supervisor
+tick that noticed it rather than with its completion time, 2 ms late against
+the C++ HAL's work item.
+
+### 16.4 The adapter
+
+The adapter's job is to be indistinguishable from the Zephyr build to
+everything outside the process. Three things make that so:
+
+- **The console.** Log lines are in Zephyr's format,
+  `[hh:mm:ss.mmm,uuu] <lvl> module: text`, with the firmware's texts (the
+  `Event`s carry the numbers; the adapter owns the strings), because the test
+  suite's `firmware_log()` parses that format and looks for those texts
+  (`node_state:`, `thread blocked`, `watchdog not fed`, `can (polled)`). The
+  shell answers `ecu status` with the same eleven lines and `ecu reset` with
+  the same confirmation, because `ecu_network.parse_status()` reads them. The
+  one text the suite looked for that was Zephyr's rather than the firmware's,
+  the kernel's `*** Booting Zephyr OS build ... ***` banner, which the
+  watchdog test uses as evidence of a reboot, was generalised to
+  `*** Booting` in the test; the adapter prints
+  `*** Booting can-ecu-sim sensor ECU (Rust) ***`. That is the only change to
+  the suite in this phase, and it widens one needle rather than any
+  expectation.
+- **The watchdog.** A thread polls the time of the last feed every
+  millisecond and, when it is older than 1000 ms, re-executes the process
+  through `/proc/self/exe` with its own arguments and environment: the same
+  pid, the same stdin pipe, the same log file, a fresh image that prints the
+  banner again, which is what `native_sim` does on a watchdog reset with
+  `CONFIG_NATIVE_SIM_REBOOT=y`. The suite's watchdog test cannot tell them
+  apart (it checks the banner, the restarted uptime and the unchanged pid).
+- **The tick timers.** The transmit and supervisor threads sleep until an
+  absolute next deadline that advances by the period, never by the wake-up
+  time, so neither period drifts with the work done in it, and a late wake
+  counts the expiries it missed instead of catching up on them, the semantics
+  of Zephyr's `k_timer_status_sync`. The measured consequence is in the
+  results: the Rust sensor's `SENSOR_DATA` period has a standard deviation of
+  0.05 ms against the simulator's 0.1 ms, because there is no 1 ms driver
+  poll between the thread and the socket.
+
+One ordering differs from the C++ loops on purpose. The firmware's receive
+and transmit threads run the stall hook first and check in afterwards, so a
+stall begins one tick after the thread's last check-in; the adapter checks in
+first and stalls second. Under Zephyr the order is harmless: the supervisor
+runs at a lower priority than the transmit thread, so at the tick where both
+are due the check-in always lands before the staleness check, and the
+suite's liveness measurement reads a deterministic 295 ms (the window minus
+half a tick, as the C++ run in section 14.8 shows). Under Linux the two are
+OS threads of equal priority, and with the C++ order the staleness verdict
+raced the check-in onto either side of the 300 ms window: the first Rust run
+measured 290.0 ms, on the lower limit of the test's 290..330 ms band. With
+the check-in before the hook the stall starts from a fresh check-in, the
+verdict falls one full window after the hook's log line, and the measurement
+reads 305 ms in every run since (three runs: 305.0, 304.9, 305.1 ms), with
+the watchdog reset 1313 to 1315 ms after the last frame. The semantics the
+hook demonstrates, a thread stuck in a blocking call after its last check-in,
+are the same.
+
+### 16.5 Cross-language conformance: the unchanged suite
+
+The suite of section 14 is the conformance test. `tools/run-system-tests.sh
+--results build/test-results-rust --sensor-exe rust/target/release/sensor-vcan`
+runs all 23 tests with the Rust sensor on `vcan0` and the C++ controller on
+`vcan1`, through the gateway, with the expectations still read from the
+controller build's `.config`; the runner gained the `--results` option so the
+two runs keep separate directories and CI uploads both (`test-results`,
+`test-results-rust`). Every test judges the pair, not one side: the controller
+must enter and leave its safe state on the Rust sensor's silence, reject its
+corrupted and stale frames by the exact counts, accept its skipped counters
+with the loss counted, see its heartbeat flags, and the Rust sensor must
+detect the controller's missing command, degrade and recover, answer the
+echo probe, survive the flood on the other segment, reboot under its own
+watchdog and come back accepted. The first run against the Rust sensor
+passed 23 of 23 (86 s), before the ordering change of section 16.4, which
+was made for margin, not for a failure.
+
+The same `tools/build-rust.sh` that CI runs is the local gate: `rustfmt` in
+check mode, `clippy` with the pedantic group and every warning an error (the
+workspace manifest lists the few lints allowed, each with its reason:
+casts between the DBC's field widths, `tec`/`rec` as names, DBC spellings in
+comments), the unit tests (34 in the core, 6 conformance tests), the release
+build of the adapter and the Cortex-M4F cross-compile, all with `--locked`
+against the committed `Cargo.lock`.
+
+### 16.6 The main differences from the C++ version
+
+What an interviewer would ask: the same ECU in two languages, what actually
+changed?
+
+1. **Out-of-table values.** C++ decodes a 4-bit `mode` straight into an `enum
+   class`, and the value `7`, which the DBC does not name, is still a valid
+   object of that type that `to_string` prints as `"UNKNOWN"`. Rust forbids an
+   enum value without a variant, so the generated structs keep the raw integer
+   and offer `mode_enum() -> Option<ControllerMode>`: the decision "what does
+   the node do with a value it does not know" is forced to the call site,
+   where it was implicit before. The receiver's behaviour is unchanged (the
+   frame is accepted, the status prints `UNKNOWN`), but the type now says so.
+2. **Application code without the kernel.** The Zephyr application
+   (`ecu.cpp`, the roles) reads the clock, posts to message queues, takes a
+   spinlock and sleeps; it can only be tested under the kernel, which is why
+   section 14.7 covers it through instrumented `native_sim` builds under the
+   suite. The Rust core takes time as an argument and returns frames and
+   events, so the whole sensor behaviour, including the bus-off backoff and
+   the watchdog decision, has unit tests with a fake clock, and the adapter is
+   the part that cannot be unit-tested, deliberately thin. The cost is one
+   coarse lock: where the firmware holds a spinlock for a few instructions at
+   a time around a shared status block, the adapter holds one mutex around
+   the whole `SensorEcu` for the duration of a tick (microseconds) and never
+   across a sleep or a socket read.
+3. **No heap by construction instead of by guard.** The firmware proves the
+   absence of allocation after start-up with a link-time guard and a CI check
+   on the images (section 11.5). The `no_std` crate has no allocator to call:
+   `Vec`, `String` and `Box` do not exist in it, the receive queue is the
+   socket's, the event lists are fixed arrays, and the cross-compile fails if
+   anything needs `alloc`. The guard is the compiler.
+4. **`const fn` and `constexpr`.** Both codecs encode and decode at compile
+   time where the arguments are constants. Rust's `const fn` is more
+   restrictive (no floating-point arithmetic in `const fn` on this toolchain,
+   so the physical-unit conversions are ordinary functions, where the C++
+   ones are `constexpr`), and the Rust tests cannot use a constant frame as a
+   `static_assert` the way the C++ tests do; the conformance vectors cover the
+   same ground at run time.
+5. **Panics instead of undefined behaviour.** An out-of-range index, an
+   overflow in a debug build or a slice shorter than a message's DLC is a
+   panic in Rust where it is undefined behaviour in C++; the codec therefore
+   checks lengths once at the boundary (`from_buffer` refuses a short buffer,
+   the DLC check precedes everything else, as in C++) and the arithmetic on
+   counters and error counters is explicitly wrapping or saturating. The
+   `no_std` target has no unwinding: a panic there would be a halt, which is
+   the same fate a hard fault gives a C++ bug, with the difference that it is
+   deterministic and at the first wrong index rather than at a later
+   corrupted one.
+6. **Threads, watchdog and timers are the adapter's.** Zephyr gives the
+   firmware priorities, static stacks, `k_timer`s and a hardware watchdog;
+   the adapter gives the core OS threads of equal priority, absolute-deadline
+   sleeps and a software watchdog that re-executes the process. The core is
+   the same in both worlds, which is the point of the phase; the one ordering
+   change of section 16.4 is the only place where the OS showed through.
+7. **Tooling.** Where the C++ side needed a clang-tidy configuration with
+   explained exclusions, a rewritten compile database and a second analyser
+   limited to the libraries (section 15.2), the Rust side has `clippy`'s
+   pedantic group clean out of the box with six allowed lints, `rustfmt` and
+   a committed lock file; and the DBC generator for Rust is 300 lines that
+   reuse the C++ generator's model.
+
+What is not ported: the controller role (one node in Rust is the conformance
+check the specification asked for; the controller would be a second role in
+the same core with the same adapter), the Nucleo image (section 16.1), and
+the Zephyr shell's conveniences beyond the two commands the tooling uses.
+
+### 16.7 Measured results (simulated bus on a desktop OS)
+
+From `tools/run-system-tests.sh --results build/test-results-rust
+--sensor-exe rust/target/release/sensor-vcan` on 2026-10-29 (86.5 s, seed 1,
+23 of 23 passed, no inconclusive attempt), the Rust sensor on `vcan0` against
+the C++ controller on `vcan1`; the C++ sensor's values from the run of
+section 14.8 beside them. Every value with its limit and its note is in
+`RESULTS.md` section 3.
+
+| What | Rust sensor | C++ sensor (section 14.8) | Limit |
+|---|---|---|---|
+| SENSOR_DATA period (10 ms) | mean 10.000 ms, std 0.050 ms, p99 10.1 ms, min 9.6 ms, max 10.4 ms | mean 10.001 ms, std 0.109 ms, p99 10.3 ms, min 9.4 ms, max 10.5 ms | mean within 1 %, p99 within 10 % |
+| SENSOR_HEARTBEAT period (100 ms) | std 0.059 ms, p99 100.1 ms, max 100.2 ms | std 0.297 ms, p99 100.3 ms, max 100.3 ms | p99 within 10 % |
+| Firmware clock against bus time (sensor heartbeat) | 1.000 ms per host ms, largest deviation 0.06 ms over 2.9 s | 1.000, 0.84 ms | 0.995..1.005 |
+| Missing CONTROLLER_COMMAND detected by the sensor (70 ms timeout, DEGRADED) | reaction 143.1 ms after the last delivered frame; RUNNING 42.8 ms after the first frame again | 168.7 / 69.0 ms | 66..215.0 / 0..145.0 ms |
+| Controller's reaction to the sensor's silence: SENSOR_DATA lost | SAFE_STATE 46.5 ms after the last delivered frame; NORMAL 516.4 ms after the first again | 51.3 / 521.4 ms | 31..100.0 / 496..565.0 ms |
+| Sensor process killed and restarted | SAFE_STATE 44.5 ms after the last SENSOR_DATA; first frame 15.5 ms after the process start; NORMAL 521.5 ms after its first heartbeat; counters from zero accepted | 50.0 / 19.2 / 507.5 ms | 31..100.0 / 496..565.0 ms |
+| Heartbeat loss (SUPPRESS_HEARTBEAT 600 ms on the sensor) | SAFE_STATE 358.8 ms after the last heartbeat, NORMAL 516.6 ms after the first again; 43 commands over 858 ms in the safe state | 374.8 / 513.9 ms | 346..415.0 / 496..565.0 ms |
+| Stalled TX thread (STALL_THREAD 1500 ms on the sensor) | feed withheld 305.1 ms after the stall, watchdog reset 1313.7 ms after the last frame, first frame 9.7 ms after the reboot (1323.3 ms of silence); same process, controller safe state once | 295.0 / 1301.6 / 11.6 ms (1313.2 ms) | 290..330 / 1290..1330 ms |
+| Corrupted frames by the gateway (10 % of the sensor's) | 22 rejected, 22 corrupted of 422; 0 timeouts | 22 of 422 | exact |
+| CORRUPT_CRC x2 and FREEZE_COUNTER x2 on the sensor | 2 corrupted / 2 rejected; 2 frozen / 2 rejected; flags after 93.7 and 23.7 ms | 2 / 2; flags after 61.9 and 72.1 ms | exact; 0..145 ms |
+| SKIP_COUNTER x3 on the sensor | 3 skipped, 3 accepted with loss, 3 lost | same | exact |
+| Random loss 10 % both ways for 3 s | 31 vs 31 + 0 (SENSOR_DATA), 5 vs 5 + 0 (SENSOR_HEARTBEAT), 15 vs 15 + 0 (CONTROLLER_COMMAND) | 36 vs 36 + 0, 4 vs 4 + 0, 16 vs 13 + 3 | exact accounting |
+| Reordering, duplicates, delay | 31 swaps: 31 out of sequence, 31 accepted with loss; 34 duplicates rejected; latency median 15.6 ms, p99 20.1 ms, no timeout | 31; 34; 15.6 / 20.2 ms | exact; p99 <= 23 ms |
+| Bus-off and recovery of the C++ controller, seen by the Rust sensor | one CONTROLLER_COMMAND timeout, DEGRADED 50 ms, RUNNING again | same | expected |
+| Flood of 2000 unknown frames/s on the controller's segment | the Rust sensor saw none, RUNNING; controller 100 % counted, 0 dropped | same | expected |
+
+The differences are the ones the adapter explains: tighter periods and a
+closer clock (no 1 ms driver poll), a faster reboot (a static Rust binary
+re-executed in 9.7 ms against the simulator's 11.6), and the liveness
+reading of section 16.4. Everything the protocol decides, the detection
+times, the hold times, the counts, is the same to the precision of a 5 ms
+supervisor tick and a 20 ms command period.
+
+### 16.8 What Phase 7 taught
+
+- **A sans-IO core is the cheapest test fixture there is.** Moving the
+  application into a crate that takes time as an argument gave the sensor
+  eight unit tests that run the bus-off backoff, the watchdog decision and
+  the restart of a peer in milliseconds, with no kernel, no socket and no
+  sleep; the C++ equivalent needed instrumented simulator builds under the
+  system suite (section 14.7).
+- **Share the oracle, not the vectors' code.** Splitting the vector generator
+  into one collector and two emitters cost 70 lines and gave the two codecs a
+  common witness; the C++ header stayed identical, and `--check` keeps both
+  current.
+- **Console compatibility is a specification.** Reproducing Zephyr's log
+  format and the shell's output to the character is what let the suite run
+  unchanged; the only incompatibility was a kernel banner, and widening that
+  one needle was a smaller change than teaching the suite two dialects.
+- **The OS shows through in the places you do not test.** The one divergence
+  from the C++ thread loops was found by a measurement at its lower limit, not
+  by a failure: an ordering that is deterministic under priorities is a race
+  under equal-priority threads, and the fix was to make the ordering mean the
+  same thing in both worlds.
+- **Lint priorities are part of the lint policy.** A lint group and an
+  individual allow at the same priority is an error in Cargo's lint tables,
+  not a warning; the first clippy run found the configuration mistake before
+  any code.
+- **Porting tests ports their mistakes too.** Two of the translated unit
+  tests encoded a wrong expectation; the implementations were right. A
+  failing ported test is a question about the test first.

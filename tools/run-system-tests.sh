@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Run the system test suite (tests/) against the two-ECU network on vcan.
 #
-#   tools/run-system-tests.sh [--coverage] [pytest args...]
+#   tools/run-system-tests.sh [--coverage] [--results DIR] [pytest args...]
 #   tools/run-system-tests.sh -k bus_off -x
+#   tools/run-system-tests.sh --results build/test-results-rust --sensor-exe rust/target/release/sensor-vcan
 #
-# Runs inside the dev container. Results land in build/test-results/:
+# Runs inside the dev container. Results land in build/test-results/ (or the
+# --results directory; the run against the Rust sensor ECU keeps its own):
 # system-tests.xml (JUnit, with every measured value as a property),
 # measurements.json and measurements.md (every measured value next to its
 # verdict), system/<test module>/ (the ECU, gateway and candump logs of each
@@ -21,11 +23,14 @@ RESULTS="build/test-results"
 
 COVERAGE=0
 PYTEST_ARGS=()
-for arg in "$@"; do
-    case "$arg" in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --coverage) COVERAGE=1 ;;
-        *) PYTEST_ARGS+=("$arg") ;;
+        --results) RESULTS="$2"; shift ;;
+        --results=*) RESULTS="${1#--results=}" ;;
+        *) PYTEST_ARGS+=("$1") ;;
     esac
+    shift
 done
 
 mkdir -p "$RESULTS"

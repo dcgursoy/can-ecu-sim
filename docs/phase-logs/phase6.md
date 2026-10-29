@@ -141,7 +141,17 @@ releases, and the README carries the workflow badge.
 
 ## 5. The CI run of this phase
 
-Recorded after the run completed, in the commit that follows this phase's.
+The run for the Phase 6 commit `8d34d3e`
+([40818484542](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40818484542))
+passed all 30 steps in 14 min 9 s. The image build took 5 min 0 s this time
+(the GitHub layer cache did not serve the Phase 5 layers; the push 59 s), the
+four firmware builds 98 s, the new static-analysis step 2 min 23 s (clang-tidy
+over 26 compile commands and cppcheck over the 10 library-test units, both
+clean), the six `vcan` demo steps 72 s and the system test suite with firmware
+coverage 2 min 6 s, with every artifact uploaded and the job summary written.
+The same push also started the two Dependabot runs the new
+`.github/dependabot.yml` asks for (68 s each, both successful), which is why
+the run list of the repository now shows three runs per push.
 
 ## 6. What Phase 6 taught
 

@@ -469,7 +469,231 @@ TOTAL                                          937      937   100%
 ------------------------------------------------------------------------------
 ```
 
-## 3. Earlier phases
+## 3. Phase 7: the same suite with the Rust sensor ECU in the sensor's place
+
+Command: `tools/dev.sh tools/run-system-tests.sh --results build/test-results-rust
+--sensor-exe rust/target/release/sensor-vcan` on 2026-10-29 (the run quoted in
+the README and in DESIGN.md section 16.7): 23 of 23 tests passed in 86.5 s,
+seed 1, no attempt inconclusive. The sensor on `vcan0` was the Rust
+implementation (`rust/`, the `no_std` crate `sensor-core` under the SocketCAN
+adapter `sensor-vcan`, the release build before the three review fixes of
+[docs/phase-logs/phase7.md](docs/phase-logs/phase7.md) section 4, which touch
+paths the suite does not exercise; the final code of the commit passed the
+same run again, 23 of 23 in 84.7 s);
+the controller on `vcan1` and the expectations (from its `.config`) were the
+C++ firmware's, the gateway and the test code were unchanged apart from one
+needle (the watchdog test looks for `*** Booting` instead of Zephyr's
+`*** Booting Zephyr`, DESIGN.md section 16.4). The limits read as in section
+2. `build/test-results-rust/` holds the same files as `build/test-results/`
+(JUnit, `measurements.json`, this table, the logs of every module), and CI
+uploads it as the `test-results-rust` artifact.
+
+Before the run, `tools/dev.sh tools/build-rust.sh` on the same commit: rustfmt
+and clippy (pedantic, every warning an error) clean; 34 unit tests of
+`sensor-core` and 6 conformance tests against the cantools / `e2e_ref.py`
+vectors passed; `sensor-vcan` built in release (6.2 MB with debug info,
+513 KB stripped); `sensor-core` cross-compiled for `thumbv7em-none-eabihf`
+(`libsensor_core.rlib`, 867 KB with metadata). Toolchain: rustc and cargo
+1.89.0, `socketcan` 3.6.2, `libm` 0.2.16, `libc` 0.2.191 (`rust/Cargo.lock`).
+
+### 3.1 Measured values, `measurements.md` of the run
+
+| test | measurement | value | limit | result |
+|---|---|---|---|---|
+| test_unknown_frame_flood_is_counted_and_not_disruptive | flood rate achieved by the gateway (2000/s requested) (4001 frames in 2.001 s, 0 send errors; Python sender on a desktop OS) | 1999.9 frames/s | >= 1800.0 | ok |
+| test_unknown_frame_flood_is_counted_and_not_disruptive | flood frames counted as unknown by the controller (4001 of 4001) | 100.0 % | >= 90.0 | ok |
+| test_unknown_frame_flood_is_counted_and_not_disruptive | no frame dropped by a full receive queue | 0 dropped, queue high-water mark 5/32 | expected | ok |
+| test_unknown_frame_flood_is_counted_and_not_disruptive | receive queue high-water mark / depth after the flood | 5/32 frames |  | info |
+| test_unknown_frame_flood_is_counted_and_not_disruptive | CONTROLLER_COMMAND period p99 during the flood (n=94, max 20.2 ms) | 20.2 ms | 18.0..22.0 | ok |
+| test_unknown_frame_flood_is_counted_and_not_disruptive | CONTROLLER_COMMAND period max during the flood | 20.2 ms | <= 25.0 | ok |
+| test_unknown_frame_flood_is_counted_and_not_disruptive | CONTROLLER_COMMAND period p99 after the flood (n=21, max 20.9 ms) | 20.7 ms |  | info |
+| test_unknown_frame_flood_is_counted_and_not_disruptive | SENSOR_DATA accepted by the controller during the experiment | 100.3 frames/s | 95.0..105.0 | ok |
+| test_unknown_frame_flood_is_counted_and_not_disruptive | controller: no timeouts, no CRC or counter faults, no safe state, RUNNING |  | expected | ok |
+| test_unknown_frame_flood_is_counted_and_not_disruptive | the flood stayed on its segment: the sensor saw no unknown frames, is RUNNING |  | expected | ok |
+| test_flood_rate_sweep | 1000/s requested: achieved (1001 frames) | 999.9 frames/s |  | info |
+| test_flood_rate_sweep | 1000/s: counted as unknown | 100.0 % | >= 90.0 | ok |
+| test_flood_rate_sweep | 1000/s: nothing dropped by the 32-frame receive queue | 0 dropped, high-water mark 5/32 | expected | ok |
+| test_flood_rate_sweep | 1000/s: CONTROLLER_COMMAND period max during the flood (p99 20.27 ms) | 20.3 ms | <= 25.0 | ok |
+| test_flood_rate_sweep | 1000/s: no timeouts or safe state, RUNNING |  | expected | ok |
+| test_flood_rate_sweep | 2000/s requested: achieved (2001 frames) | 1999.9 frames/s |  | info |
+| test_flood_rate_sweep | 2000/s: counted as unknown | 100.0 % | >= 90.0 | ok |
+| test_flood_rate_sweep | 2000/s: nothing dropped by the 32-frame receive queue | 0 dropped, high-water mark 5/32 | expected | ok |
+| test_flood_rate_sweep | 2000/s: CONTROLLER_COMMAND period max during the flood (p99 20.11 ms) | 20.1 ms | <= 25.0 | ok |
+| test_flood_rate_sweep | 2000/s: no timeouts or safe state, RUNNING |  | expected | ok |
+| test_flood_rate_sweep | 4000/s requested: achieved (4001 frames) | 3999.6 frames/s |  | info |
+| test_flood_rate_sweep | 4000/s: counted as unknown | 100.0 % | >= 90.0 | ok |
+| test_flood_rate_sweep | 4000/s: nothing dropped by the 32-frame receive queue | 0 dropped, high-water mark 7/32 | expected | ok |
+| test_flood_rate_sweep | 4000/s: CONTROLLER_COMMAND period max during the flood (p99 20.17 ms) | 20.2 ms | <= 25.0 | ok |
+| test_flood_rate_sweep | 4000/s: no timeouts or safe state, RUNNING |  | expected | ok |
+| test_error_passive_entry_and_healing | ERROR_PASSIVE visible in the controller heartbeat after the injection (INJECT_CAN_ERROR x20: TEC 160) | 58.8 ms | 0..145.0 | ok |
+| test_error_passive_entry_and_healing | time in error-passive (firmware log, ECU clock) (TEC heals by one per successful frame at 60/s: 33 frames, 550 ms expected) | 560.0 ms | 490.0..610.0 | ok |
+| test_error_passive_entry_and_healing | time in error-passive (heartbeats, 100 ms granularity) | 599.6 ms |  | info |
+| test_error_passive_entry_and_healing | CONTROLLER_COMMAND rate while error-passive (transmission continues) | 50.0 frames/s | 45.0..55.0 | ok |
+| test_error_passive_entry_and_healing | one passive event, no bus-off, no safe state (error-passive is not an input loss) |  | expected | ok |
+| test_error_passive_entry_and_healing | controller ERROR_ACTIVE and RUNNING again, TEC healed | state ERROR_ACTIVE tec=70 | expected | ok |
+| test_bus_off_recovery_after_the_backoff | exactly one gap in the controller's commands | 1 | expected | ok |
+| test_bus_off_recovery_after_the_backoff | CONTROLLER_COMMAND silence on the bus (bus-off, backoff, recovery) (backoff 100 ms + modelled recovery 3 ms + supervisor tick + next TX slot) | 119.9 ms | 100..168.0 | ok |
+| test_bus_off_recovery_after_the_backoff | bus-off to error-active in the firmware log (ECU clock) | 100.0 ms | 100..118 | ok |
+| test_bus_off_recovery_after_the_backoff | last_recovery_ms reported by `ecu status` | 103 ms |  | info |
+| test_bus_off_recovery_after_the_backoff | one bus-off, one attempt, one recovery ok, no failure, phase active | phase active | expected | ok |
+| test_bus_off_recovery_after_the_backoff | bus-off is an input loss: one safe-state entry, the first command after the gap is SAFE_STATE | first mode SAFE_STATE | expected | ok |
+| test_bus_off_recovery_after_the_backoff | NORMAL again after the first command following recovery (recovery hold 500 ms) | 500.0 ms | 496..565.0 | ok |
+| test_bus_off_recovery_after_the_backoff | heartbeat after recovery: BUS_OFF_SEEN flag set, bus_off_count 1 |  | expected | ok |
+| test_bus_off_recovery_after_the_backoff | sensor: one CONTROLLER_COMMAND timeout, DEGRADED then RUNNING again | [00:00:02.635,944] <inf> ecu: node_state: RUNNING -> DEGRADED (critical input lost); [00:00:02.685,955] <inf> ecu: node_state: DEGRADED -> RUNNING (inputs nominal) | expected | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | bus-off #1: command silence (backoff 100 ms) | 120.1 ms | 100..168.0 | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | bus-off #2: command silence (backoff 200 ms (doubled: the previous recovery did not hold)) | 220.0 ms | 200..268.0 | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | bus-off #3: command silence (backoff 400 ms (doubled: the previous recovery did not hold)) | 440.3 ms | 400..468.0 | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | bus-off #4: command silence (backoff 800 ms (doubled: the previous recovery did not hold)) | 839.7 ms | 800..868.0 | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | bus-off #5: command silence (backoff 1600 ms (doubled: the previous recovery did not hold)) | 1640.1 ms | 1600..1668.0 | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | every attempted recovery completed before the next bus-off (5) | [True, True, True, True, True] | expected | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | bus-off #6: no recovery, phase failed, node FAULT, transmission stopped | phase failed, state FAULT, 0 commands after it | expected | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | 5 attempts, 5 recoveries ok, 5 failures (the attempts are exhausted) | attempts 5, ok 5, failures 5 | expected | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | first command after `ecu reset` (the reset restarts the backoff from the first attempt; the controller is still bus-off) | 123.7 ms | 100..188.0 | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | NORMAL again after `ecu reset` (backoff 100 ms + recovery hold 500 ms) | 623.7 ms | 600..693.0 | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | controller RUNNING, CAN phase active after the reset | state RUNNING, phase active | expected | ok |
+| test_repeated_bus_off_doubles_the_backoff_until_fault | sensor: one CONTROLLER_COMMAND timeout per silence (6), RUNNING again | 6 | expected | ok |
+| test_corrupted_frames_are_rejected_by_crc | controller CRC rejections == frames the gateway corrupted | 22 rejected, 22 corrupted of 422 | expected | ok |
+| test_corrupted_frames_are_rejected_by_crc | SENSOR_DATA: runs of consecutive corrupted frames (longest 2; a run of rejects is silence to the 35 ms timeout) | 16 runs |  | info |
+| test_corrupted_frames_are_rejected_by_crc | SENSOR_DATA: timeouts == runs longer than the timeout (0) | 0 | expected | ok |
+| test_corrupted_frames_are_rejected_by_crc | BATTERY_STATUS: runs of consecutive corrupted frames (longest 1; a run of rejects is silence to the 350 ms timeout) | 4 runs |  | info |
+| test_corrupted_frames_are_rejected_by_crc | BATTERY_STATUS: timeouts == runs longer than the timeout (0) | 0 | expected | ok |
+| test_corrupted_frames_are_rejected_by_crc | SENSOR_HEARTBEAT: runs of consecutive corrupted frames (longest 1; a run of rejects is silence to the 350 ms timeout) | 1 runs |  | info |
+| test_corrupted_frames_are_rejected_by_crc | SENSOR_HEARTBEAT: timeouts == runs longer than the timeout (0) | 0 | expected | ok |
+| test_corrupted_frames_are_rejected_by_crc | controller safe-state entries == timeout runs on critical inputs (0) | 0 | expected | ok |
+| test_corrupted_frames_are_rejected_by_crc | controller RUNNING again; sensor unaffected |  | expected | ok |
+| test_crc_fault_is_latched_in_the_heartbeat_flags | sensor corrupted 2 frames, controller rejected 2 by CRC | 2 corrupted, 2 bad on the bus, 2 rejected | expected | ok |
+| test_crc_fault_is_latched_in_the_heartbeat_flags | CRC_FAULT_SEEN clear in the heartbeat before the fault (RESET_FAULTS) |  | expected | ok |
+| test_crc_fault_is_latched_in_the_heartbeat_flags | CRC_FAULT_SEEN published in the controller heartbeat after the first bad frame (flag set on rejection, published by the next heartbeat) | 93.7 ms | 0..145.0 | ok |
+| test_crc_fault_is_latched_in_the_heartbeat_flags | two bad frames are tolerated: no timeout, no safe state |  | expected | ok |
+| test_stale_counter_is_rejected_as_repeated | sensor repeated the previous counter on 2 frames, controller rejected 2 as repeated | 2 frozen, 2 stale on the bus, 2 rejected | expected | ok |
+| test_stale_counter_is_rejected_as_repeated | COUNTER_FAULT_SEEN clear before the fault |  | expected | ok |
+| test_stale_counter_is_rejected_as_repeated | COUNTER_FAULT_SEEN published after the first stale frame | 23.7 ms | 0..145.0 | ok |
+| test_stale_counter_is_rejected_as_repeated | two stale frames are tolerated: no CRC fault, no timeout, no safe state | crc 0, timeouts 0, safe-state entries 0 | expected | ok |
+| test_stale_counter_is_rejected_as_repeated | controller repeated-counter rejections == frames the gateway duplicated | 41 rejected, 41 duplicated of 362 | expected | ok |
+| test_stale_counter_is_rejected_as_repeated | duplicates cause no CRC faults, timeouts or safe state; both RUNNING |  | expected | ok |
+| test_skipped_counter_is_accepted_and_the_loss_counted | sensor skipped 3 counter values: controller accepted 3 frames with loss, 3 frames counted lost | 3 skipped, 3 accepted with loss, 3 lost | expected | ok |
+| test_skipped_counter_is_accepted_and_the_loss_counted | nothing rejected (the data is fresh), no timeout, no safe state |  | expected | ok |
+| test_skipped_counter_is_accepted_and_the_loss_counted | SENSOR_DATA frames dropped for 15 ms (largest gap on the bus 30.1 ms) | 2 frames |  | info |
+| test_skipped_counter_is_accepted_and_the_loss_counted | timeouts == gaps over 35 ms (0) | 0 | expected | ok |
+| test_skipped_counter_is_accepted_and_the_loss_counted | dropped == counted lost by the counter + frames inside timeout gaps | 2 dropped, 2 lost, 0 in timeout gaps | expected | ok |
+| test_persistent_bad_frames_degrade_the_node | CRC rejections == corrupted BATTERY_STATUS frames (at least 3) | 4 rejected, 4 corrupted | expected | ok |
+| test_persistent_bad_frames_degrade_the_node | DEGRADED in the heartbeat after the 3rd consecutive bad frame | 23.7 ms | 0..145.0 | ok |
+| test_persistent_bad_frames_degrade_the_node | RUNNING again after the first good frame | 24.1 ms | 0..145.0 | ok |
+| test_persistent_bad_frames_degrade_the_node | no safe state (battery is not a critical input), SENSOR_DATA untouched |  | expected | ok |
+| test_dropped_frames_are_accounted_by_the_counters | SENSOR_DATA: dropped by the gateway (controller counted 31 lost by counter and 0 timeouts; 0 gaps over 35 ms hold 0 frames) | 31 frames |  | info |
+| test_dropped_frames_are_accounted_by_the_counters | SENSOR_DATA: timeouts == gaps over the timeout | 0 vs 0 | expected | ok |
+| test_dropped_frames_are_accounted_by_the_counters | SENSOR_DATA: dropped == counted lost + frames inside timeout gaps | 31 vs 31 + 0 | expected | ok |
+| test_dropped_frames_are_accounted_by_the_counters | SENSOR_HEARTBEAT: dropped by the gateway (controller counted 5 lost by counter and 0 timeouts; 0 gaps over 350 ms hold 0 frames) | 5 frames |  | info |
+| test_dropped_frames_are_accounted_by_the_counters | SENSOR_HEARTBEAT: timeouts == gaps over the timeout | 0 vs 0 | expected | ok |
+| test_dropped_frames_are_accounted_by_the_counters | SENSOR_HEARTBEAT: dropped == counted lost + frames inside timeout gaps | 5 vs 5 + 0 | expected | ok |
+| test_dropped_frames_are_accounted_by_the_counters | CONTROLLER_COMMAND: dropped by the gateway (sensor counted 15 lost by counter and 0 timeouts; 0 gaps over 70 ms hold 0 frames) | 15 frames |  | info |
+| test_dropped_frames_are_accounted_by_the_counters | CONTROLLER_COMMAND: timeouts == gaps over the timeout | 0 vs 0 | expected | ok |
+| test_dropped_frames_are_accounted_by_the_counters | CONTROLLER_COMMAND: dropped == counted lost + frames inside timeout gaps | 15 vs 15 + 0 | expected | ok |
+| test_dropped_frames_are_accounted_by_the_counters | controller safe-state entries == loss events on its critical inputs (0) | 0 | expected | ok |
+| test_dropped_frames_are_accounted_by_the_counters | no CRC faults on either side (loss is not corruption); both RUNNING again |  | expected | ok |
+| test_dropped_frames_are_accounted_by_the_counters | gateway: dropped sensor->controller / controller->sensor | 41 of 555 / 21 of 278 |  | info |
+| test_duplicated_frames_are_rejected | controller repeated-counter rejections == frames the gateway duplicated | 34 rejected, 34 duplicated of 362 | expected | ok |
+| test_duplicated_frames_are_rejected | COUNTER_FAULT_SEEN clear before, published in the controller heartbeat after |  | expected | ok |
+| test_duplicated_frames_are_rejected | no CRC faults, timeouts or safe state; both RUNNING |  | expected | ok |
+| test_delayed_frames_are_not_losses | SENSOR_DATA latency p1 with 15 +/- 5 ms configured (n=285) | 10.4 ms | >= 9.500 | ok |
+| test_delayed_frames_are_not_losses | SENSOR_DATA latency median | 15.6 ms | 13.0..17.0 | ok |
+| test_delayed_frames_are_not_losses | SENSOR_DATA latency p99 | 20.1 ms | <= 23.0 | ok |
+| test_delayed_frames_are_not_losses | gateway max scheduled latency a->b / b->a | 19.98 / 19.98 ms |  | info |
+| test_delayed_frames_are_not_losses | latency is not loss for a period-based timeout: no timeouts, no safe state, both RUNNING |  | expected | ok |
+| test_delayed_frames_are_not_losses | constant 20 ms delay: SENSOR_DATA latency median | 20.2 ms | 19.0..22.0 | ok |
+| test_delayed_frames_are_not_losses | constant 20 ms delay: largest SENSOR_DATA gap on the controller's segment (the step into the delay) (period 10 ms + 20 ms step, below the 35 ms timeout) | 30.1 ms | <= 34 | ok |
+| test_delayed_frames_are_not_losses | 20 ms of latency: no timeout, no counter fault, no safe state |  | expected | ok |
+| test_reordered_frames_are_rejected_out_of_sequence | SENSOR_DATA frames swapped with their successor (0 held frames released late without a successor) | 31 frames |  | info |
+| test_reordered_frames_are_rejected_out_of_sequence | out-of-sequence rejections == swaps (the late frame is rejected) | 31 | expected | ok |
+| test_reordered_frames_are_rejected_out_of_sequence | accepted-with-loss events == swaps (the successor arrives with counter +2), one frame counted lost each | 31 accepted with loss, 31 lost | expected | ok |
+| test_reordered_frames_are_rejected_out_of_sequence | no CRC faults, timeouts or safe state; both RUNNING |  | expected | ok |
+| test_sensor_process_death_and_restart | SAFE_STATE command after the last SENSOR_DATA of the killed sensor (the 35 ms SENSOR_DATA timeout fires first; the heartbeat timeout would take 350 ms) | 44.5 ms | 31..100.0 | ok |
+| test_sensor_process_death_and_restart | time from the kill to the SAFE_STATE command | 40.4 ms |  | info |
+| test_sensor_process_death_and_restart | controller in SAFE_STATE while the sensor is dead | SAFE_STATE | expected | ok |
+| test_sensor_process_death_and_restart | restarted sensor: first frame after the process start (process start, Zephyr boot, first TX tick) | 15.5 ms | <= 1000.0 | ok |
+| test_sensor_process_death_and_restart | restarted sensor: first heartbeat after its first frame | 59.9 ms | 0..110.0 | ok |
+| test_sensor_process_death_and_restart | NORMAL command after the first heartbeat of the restarted sensor (both critical inputs alive from the heartbeat on; hold 500 ms) | 521.5 ms | 496..565.0 | ok |
+| test_sensor_process_death_and_restart | controller: one timeout per sensor message, one safe-state entry | {'SENSOR_DATA': 1, 'BATTERY_STATUS': 1, 'SENSOR_HEARTBEAT': 1} | expected | ok |
+| test_sensor_process_death_and_restart | the restarted sensor's counters (from 0) are accepted: no counter rejections, no CRC faults (the timeout reset the receiver's counter history) |  | expected | ok |
+| test_sensor_process_death_and_restart | both RUNNING at the end |  | expected | ok |
+| test_stalled_thread_is_reset_by_the_watchdog | exactly one gap in SENSOR_DATA | 1 | expected | ok |
+| test_stalled_thread_is_reset_by_the_watchdog | SENSOR_DATA silence on the bus (stall, watchdog reset, reboot, first TX tick) | 1323.3 ms |  | info |
+| test_stalled_thread_is_reset_by_the_watchdog | watchdog reset after the last frame (firmware uptime dates the reboot) (the supervisor feeds the watchdog until the stalled thread is 300 ms stale, then the watchdog's 1000 ms run out) | 1313.7 ms | 1290..1330 | ok |
+| test_stalled_thread_is_reset_by_the_watchdog | reboot to the first frame of the rebooted sensor (host: exec, Zephyr boot, first TX tick) (host time, not firmware time: the executable is re-executed from the bind mount) | 9.694 ms | <= 1500.0 | ok |
+| test_stalled_thread_is_reset_by_the_watchdog | watchdog feed withheld after the liveness window (firmware log, ECU clock) (liveness window 300 ms) | 305.1 ms | 290..330 | ok |
+| test_stalled_thread_is_reset_by_the_watchdog | sensor rebooted in place: boot banner again, uptime restarted, same process | uptime 1690 ms, same pid | expected | ok |
+| test_stalled_thread_is_reset_by_the_watchdog | controller: one safe-state entry, RUNNING again |  | expected | ok |
+| test_stalled_thread_is_reset_by_the_watchdog | sensor RUNNING again |  | expected | ok |
+| test_heartbeat_loss_drives_the_controller_into_safe_state | heartbeats suppressed by the sensor (SUPPRESS_HEARTBEAT 600 ms) | 6 frames |  | info |
+| test_heartbeat_loss_drives_the_controller_into_safe_state | SENSOR_HEARTBEAT silence on the bus (600 ms of suppression starts and ends between two 100 ms heartbeat slots) | 700.0 ms | 590..810.0 | ok |
+| test_heartbeat_loss_drives_the_controller_into_safe_state | SAFE_STATE command after the last heartbeat (heartbeat timeout 350 ms + supervisor tick + command period) | 358.8 ms | 346..415.0 | ok |
+| test_heartbeat_loss_drives_the_controller_into_safe_state | NORMAL command after the first heartbeat again (recovery hold 500 ms + tick + command period) | 516.6 ms | 496..565.0 | ok |
+| test_heartbeat_loss_drives_the_controller_into_safe_state | every command in the safe state: actuators off, brake hold, speed limit 0, torque 0 | 43 commands over 858 ms | expected | ok |
+| test_heartbeat_loss_drives_the_controller_into_safe_state | controller: one safe-state entry, one SENSOR_HEARTBEAT timeout, SENSOR_DATA never timed out, RUNNING again |  | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_DATA] | SENSOR_DATA: frames dropped by the gateway (435 ms of loss, period 10 ms) | 44 frames |  | info |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_DATA] | SENSOR_DATA: controller reaction (CONTROLLER_COMMAND.mode=SAFE_STATE) after the last delivered frame (timeout 35 ms + supervisor tick 5 ms + 20 ms publish period) | 46.5 ms | 31..100.0 | ok |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_DATA] | SENSOR_DATA: controller back to NORMAL after the first frame delivered again (recovery hold 500 ms + tick + publish period) | 516.4 ms | 496..565.0 | ok |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_DATA] | SENSOR_DATA: exactly one timeout counted by the controller, none for its other inputs | 1 for SENSOR_DATA, 0 others | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_DATA] | SENSOR_DATA: controller safe-state entries == 1, RUNNING again | 1 entries, state RUNNING | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_DATA] | SENSOR_DATA: sensor unaffected (no timeouts, no safe state, RUNNING) |  | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_HEARTBEAT] | SENSOR_HEARTBEAT: frames dropped by the gateway (750 ms of loss, period 100 ms) | 7 frames |  | info |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_HEARTBEAT] | SENSOR_HEARTBEAT: controller reaction (CONTROLLER_COMMAND.mode=SAFE_STATE) after the last delivered frame (timeout 350 ms + supervisor tick 5 ms + 20 ms publish period) | 356.5 ms | 346..415.0 | ok |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_HEARTBEAT] | SENSOR_HEARTBEAT: controller back to NORMAL after the first frame delivered again (recovery hold 500 ms + tick + publish period) | 516.4 ms | 496..565.0 | ok |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_HEARTBEAT] | SENSOR_HEARTBEAT: exactly one timeout counted by the controller, none for its other inputs | 1 for SENSOR_HEARTBEAT, 0 others | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_HEARTBEAT] | SENSOR_HEARTBEAT: controller safe-state entries == 1, RUNNING again | 1 entries, state RUNNING | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[SENSOR_HEARTBEAT] | SENSOR_HEARTBEAT: sensor unaffected (no timeouts, no safe state, RUNNING) |  | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[BATTERY_STATUS] | BATTERY_STATUS: frames dropped by the gateway (750 ms of loss, period 100 ms) | 8 frames |  | info |
+| test_missing_message_is_detected_within_its_timeout[BATTERY_STATUS] | BATTERY_STATUS: controller reaction (CONTROLLER_HEARTBEAT.node_state=DEGRADED) after the last delivered frame (timeout 350 ms + supervisor tick 5 ms + 100 ms publish period) | 427.5 ms | 346..495.0 | ok |
+| test_missing_message_is_detected_within_its_timeout[BATTERY_STATUS] | BATTERY_STATUS: controller back to RUNNING after the first frame delivered again (no hold before leaving DEGRADED) | 26.9 ms | 0..145.0 | ok |
+| test_missing_message_is_detected_within_its_timeout[BATTERY_STATUS] | BATTERY_STATUS: exactly one timeout counted by the controller, none for its other inputs | 1 for BATTERY_STATUS, 0 others | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[BATTERY_STATUS] | BATTERY_STATUS: controller safe-state entries == 0, RUNNING again | 0 entries, state RUNNING | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[BATTERY_STATUS] | BATTERY_STATUS: sensor unaffected (no timeouts, no safe state, RUNNING) |  | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[CONTROLLER_COMMAND] | CONTROLLER_COMMAND: frames dropped by the gateway (470 ms of loss, period 20 ms) | 24 frames |  | info |
+| test_missing_message_is_detected_within_its_timeout[CONTROLLER_COMMAND] | CONTROLLER_COMMAND: sensor reaction (SENSOR_HEARTBEAT.node_state=DEGRADED) after the last delivered frame (timeout 70 ms + supervisor tick 5 ms + 100 ms publish period) | 143.1 ms | 66..215.0 | ok |
+| test_missing_message_is_detected_within_its_timeout[CONTROLLER_COMMAND] | CONTROLLER_COMMAND: sensor back to RUNNING after the first frame delivered again (no hold before leaving DEGRADED) | 42.8 ms | 0..145.0 | ok |
+| test_missing_message_is_detected_within_its_timeout[CONTROLLER_COMMAND] | CONTROLLER_COMMAND: exactly one timeout counted by the sensor, none for its other inputs | 1 for CONTROLLER_COMMAND, 0 others | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[CONTROLLER_COMMAND] | CONTROLLER_COMMAND: sensor safe-state entries == 0, RUNNING again | 0 entries, state RUNNING | expected | ok |
+| test_missing_message_is_detected_within_its_timeout[CONTROLLER_COMMAND] | CONTROLLER_COMMAND: controller unaffected (no timeouts, no safe state, RUNNING) |  | expected | ok |
+| test_periodic_messages_stay_within_tolerance | SENSOR_DATA period mean (n=499, nominal 10 ms) | 10.000 ms | 9.900..10.1 | ok |
+| test_periodic_messages_stay_within_tolerance | SENSOR_DATA period std | 0.050 ms |  | info |
+| test_periodic_messages_stay_within_tolerance | SENSOR_DATA period p99 | 10.1 ms | 9.000..11.0 | ok |
+| test_periodic_messages_stay_within_tolerance | SENSOR_DATA period min | 9.598 ms | >= 7.500 | ok |
+| test_periodic_messages_stay_within_tolerance | SENSOR_DATA period max | 10.4 ms | <= 12.5 | ok |
+| test_periodic_messages_stay_within_tolerance | SENSOR_DATA rate | 100.0 frames/s | 98.0..102.0 | ok |
+| test_periodic_messages_stay_within_tolerance | BATTERY_STATUS period mean (n=49, nominal 100 ms) | 100.0 ms | 99.0..101.0 | ok |
+| test_periodic_messages_stay_within_tolerance | BATTERY_STATUS period std | 0.034 ms |  | info |
+| test_periodic_messages_stay_within_tolerance | BATTERY_STATUS period p99 | 100.1 ms | 90.0..110.0 | ok |
+| test_periodic_messages_stay_within_tolerance | BATTERY_STATUS period min | 99.9 ms | >= 75.0 | ok |
+| test_periodic_messages_stay_within_tolerance | BATTERY_STATUS period max | 100.1 ms | <= 125.0 | ok |
+| test_periodic_messages_stay_within_tolerance | BATTERY_STATUS rate | 10.0 frames/s | 9.800..10.2 | ok |
+| test_periodic_messages_stay_within_tolerance | SENSOR_HEARTBEAT period mean (n=49, nominal 100 ms) | 100.0 ms | 99.0..101.0 | ok |
+| test_periodic_messages_stay_within_tolerance | SENSOR_HEARTBEAT period std | 0.059 ms |  | info |
+| test_periodic_messages_stay_within_tolerance | SENSOR_HEARTBEAT period p99 | 100.1 ms | 90.0..110.0 | ok |
+| test_periodic_messages_stay_within_tolerance | SENSOR_HEARTBEAT period min | 99.9 ms | >= 75.0 | ok |
+| test_periodic_messages_stay_within_tolerance | SENSOR_HEARTBEAT period max | 100.2 ms | <= 125.0 | ok |
+| test_periodic_messages_stay_within_tolerance | SENSOR_HEARTBEAT rate | 10.0 frames/s | 9.800..10.2 | ok |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_COMMAND period mean (n=249, nominal 20 ms) | 20.0 ms | 19.8..20.2 | ok |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_COMMAND period std | 0.129 ms |  | info |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_COMMAND period p99 | 20.4 ms | 18.0..22.0 | ok |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_COMMAND period min | 19.4 ms | >= 15.0 | ok |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_COMMAND period max | 20.6 ms | <= 25.0 | ok |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_COMMAND rate | 50.0 frames/s | 49.0..51.0 | ok |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_HEARTBEAT period mean (n=49, nominal 100 ms) | 100.0 ms | 99.0..101.0 | ok |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_HEARTBEAT period std | 0.340 ms |  | info |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_HEARTBEAT period p99 | 100.4 ms | 90.0..110.0 | ok |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_HEARTBEAT period min | 99.0 ms | >= 75.0 | ok |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_HEARTBEAT period max | 100.5 ms | <= 125.0 | ok |
+| test_periodic_messages_stay_within_tolerance | CONTROLLER_HEARTBEAT rate | 10.0 frames/s | 9.800..10.2 | ok |
+| test_periodic_messages_stay_within_tolerance | sensor: no TX tick overruns, nothing busy or rejected | overruns 0, busy 0, rejected 0 | expected | ok |
+| test_periodic_messages_stay_within_tolerance | sensor: watchdog fed on every supervisor tick | feeds 1100, skipped 0 | expected | ok |
+| test_periodic_messages_stay_within_tolerance | controller: no TX tick overruns, nothing busy or rejected | overruns 0, busy 0, rejected 0 | expected | ok |
+| test_periodic_messages_stay_within_tolerance | controller: watchdog fed on every supervisor tick | feeds 1106, skipped 0 | expected | ok |
+| test_firmware_clock_tracks_bus_time | SENSOR_HEARTBEAT: firmware ms per host ms (2900 ms of uptime over 2900.0 ms of bus time, 30 heartbeats) | 1.000 | 0.995..1.005 | ok |
+| test_firmware_clock_tracks_bus_time | SENSOR_HEARTBEAT: largest firmware-clock deviation from bus time (heartbeat uptime is stamped at assembly, up to one TX slot before the frame) | 0.060 ms | <= 15.0 | ok |
+| test_firmware_clock_tracks_bus_time | CONTROLLER_HEARTBEAT: firmware ms per host ms (2900 ms of uptime over 2899.9 ms of bus time, 30 heartbeats) | 1.000 | 0.995..1.005 | ok |
+| test_firmware_clock_tracks_bus_time | CONTROLLER_HEARTBEAT: largest firmware-clock deviation from bus time (heartbeat uptime is stamped at assembly, up to one TX slot before the frame) | 0.810 ms | <= 15.0 | ok |
+
+## 4. Earlier phases
 
 The numbers from Phases 2 and 3 quoted in the README are recorded with their
 full console output in the phase logs:

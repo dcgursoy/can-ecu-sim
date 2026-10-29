@@ -1,0 +1,20 @@
+[package]
+name = "sensor-core"
+description = "can-ecu-sim sensor ECU: protocol codec, E2E protection, state machines and the sensor application, no_std"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+# No panic machinery and no unwinding tables are needed on the bare target; the
+# host tests link the std test harness as usual.
+crate-type = ["rlib"]
+
+[dependencies]
+# sinf/cosf for the vehicle model: core has no float transcendentals.
+libm = "0.2"
+
+[lints]
+workspace = true

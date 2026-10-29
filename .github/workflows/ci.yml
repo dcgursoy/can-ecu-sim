@@ -26,7 +26,7 @@ jobs:
   # local run. The GitHub-hosted runner's kernel provides the vcan module; the
   # container only needs CAP_NET_ADMIN to create interfaces in its own namespace.
   build-and-test:
-    name: Dev image, generated code, host tests, firmware builds, network on vcan
+    name: Dev image, generated code, host tests, firmware builds, Rust port, network on vcan
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -123,6 +123,15 @@ jobs:
       - name: Static analysis, clang-tidy and cppcheck, every finding an error
         run: tools/dev.sh tools/static-analysis.sh
 
+      # The Rust sensor ECU (rust/): rustfmt and clippy with every warning an
+      # error, the unit tests of both crates and the conformance tests of the
+      # no_std core against the cantools / e2e_ref.py vectors, the release build
+      # of the SocketCAN adapter, and the core cross-compiled for
+      # thumbv7em-none-eabihf (the Nucleo's Cortex-M4F), the proof that it
+      # carries nothing of std (tools/build-rust.sh).
+      - name: Rust sensor ECU, lint, tests, release build, cross-compile for thumbv7em-none-eabihf
+        run: tools/dev.sh tools/build-rust.sh
+
       - name: Smoke test, candump sees protected frames on vcan0
         run: tools/dev.sh tools/smoke-test.sh build/native_sim_sensor/zephyr/zephyr.exe
 
@@ -151,6 +160,12 @@ jobs:
       - name: System test suite on vcan (pytest, seven groups) with firmware coverage
         run: tools/dev.sh tools/run-system-tests.sh --coverage
 
+      # Cross-language conformance: the same suite, unchanged, with the Rust
+      # sensor ECU in the sensor's place and the C++ controller opposite it.
+      # Its results go to their own directory and artifact, so both runs are kept.
+      - name: System test suite against the Rust sensor ECU (cross-language conformance)
+        run: tools/dev.sh tools/run-system-tests.sh --results build/test-results-rust --sensor-exe rust/target/release/sensor-vcan
+
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -161,6 +176,7 @@ jobs:
             build/nucleo_f446re_*/zephyr/zephyr.elf
             build/nucleo_f446re_*/zephyr/zephyr.hex
             build/*/zephyr/.config
+            rust/target/release/sensor-vcan
           include-hidden-files: true
           if-no-files-found: warn
 
@@ -196,6 +212,14 @@ jobs:
         with:
           name: test-results
           path: build/test-results/
+          if-no-files-found: warn
+
+      - name: Upload test results of the run against the Rust sensor ECU
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-rust
+          path: build/test-results-rust/
           if-no-files-found: warn
 
       # The run page gets the numbers: test counts of every suite, the coverage

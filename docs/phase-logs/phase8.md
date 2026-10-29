@@ -51,4 +51,18 @@ policy, no adversarial review.
 
 ## 3. The CI run of this phase and the rendering
 
-Recorded after the run completed, in the commit that follows this phase's.
+The run for the Phase 8 commit `1d54d38`
+([40901551354](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40901551354))
+passed all 33 steps in 10 min 39 s, the fastest full run of the project
+(image build 84 s and push 51 s, the four firmware builds 71 s, the static
+analysis 97 s, the Rust gate 25 s, the C++ suite with firmware coverage
+114 s, the suite against the Rust sensor 85 s), a documentation-only commit
+exercising every step once more.
+
+The README's diagram was checked on GitHub's rendering of the repository
+front page: the Mermaid container rendered without an error notice and its
+frame grew from the 180 px loading placeholder to 438 px once the diagram was
+drawn. The same source was also rendered by an independent service
+(mermaid.ink, which answers a bad diagram with an error): an SVG of 1923 by
+593 units with the nine nodes, the one cluster, thirteen edges and every
+label present.

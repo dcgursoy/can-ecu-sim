@@ -79,7 +79,8 @@ Every row of the README table, in its order:
 | CI, the whole pipeline on a GitHub-hosted runner | phase7.md section 5 | G |
 
 The CI runs of the project, one per push to `main` (the Dependabot runs the
-repository also records are not listed):
+repository also records, and the runs of the documentation-only commits that
+followed a phase, are not listed):
 
 | Commit | Run | Result | Steps | Duration |
 |---|---|---|---|---|
@@ -89,6 +90,7 @@ repository also records are not listed):
 | `8d34d3e`, Phase 6 | [40818484542](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40818484542) | passed | 30 | 14 min 9 s (image layers rebuilt) |
 | `8472b9b`, Phase 7 | [40824884673](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40824884673) | failed in the C++ system suite: a floating-point difference of two timestamps compared against a limit it equalled (phase7.md section 5) | 33 | 11 min 10 s |
 | `aa1c495`, the harness fix | [40826567803](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40826567803) | passed | 33 | 12 min 12 s |
+| `1d54d38`, Phase 8 | [40901551354](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40901551354) | passed | 33 | 10 min 39 s |
 
 ## 1. Phase 4: recording of the plain-bus network with the host tools
 

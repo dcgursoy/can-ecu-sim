@@ -153,7 +153,24 @@ what made the review worth running where the suite had already passed.
 
 ## 5. The CI run of this phase
 
-Recorded after the run completed, in the commit that follows this phase's.
+The run for the Phase 7 commit `8472b9b`
+([40824884673](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40824884673))
+failed after 11 min 10 s in step 25 of 33, the C++ system suite with firmware
+coverage; every step before it had passed, the new Rust gate among them (31 s
+for rustfmt, clippy, the 40 tests, the release build and the cross-compile),
+and the Rust conformance run (step 26) was skipped as a consequence. The
+failing check was `test_bus_off_recovery_after_the_backoff`'s "bus-off to
+error-active in the firmware log (ECU clock) = 100.0 ms [100..118]": the
+controller recovered exactly one backoff after the bus-off in its own log, a
+legitimate alignment of the 5 ms supervisor tick with the event (105 ms in most
+runs), and the harness, which builds its timestamps as floating-point seconds,
+computed the difference a hair below 100 and lost it against the limit. The
+number printed next to the verdict was right; the comparison was not.
+`Measure.check()` now rounds a floating-point value to six decimals, the
+microsecond resolution of the logs the values come from, before it meets its
+limit; no expectation changed, and the rounding applies to both suite runs.
+The C++ suite passed locally after the fix (23 of 23, 85 s); the CI run of the
+fix commit is recorded with the next commit.
 
 ## 6. What Phase 7 taught
 

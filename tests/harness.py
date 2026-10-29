@@ -413,6 +413,12 @@ class Measure:
         else:
             limit = ""
         ok = isinstance(value, (int, float)) and not (isinstance(value, float) and math.isnan(value))
+        if ok and isinstance(value, float):
+            # Firmware and kernel timestamps are exact microseconds; a difference of
+            # two of them computed in floating-point seconds carries an error of
+            # about 1e-13 that must not decide a verdict at a limit (a 100.0 ms
+            # recovery read 99.99999999999964 against lo = 100 on one CI run).
+            value = round(value, 6)
         ok = ok and (lo is None or value >= lo) and (hi is None or value <= hi)
         self.rows.append(Row(name, value, unit, limit, ok, note))
         return ok

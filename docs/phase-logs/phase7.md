@@ -169,8 +169,14 @@ number printed next to the verdict was right; the comparison was not.
 `Measure.check()` now rounds a floating-point value to six decimals, the
 microsecond resolution of the logs the values come from, before it meets its
 limit; no expectation changed, and the rounding applies to both suite runs.
-The C++ suite passed locally after the fix (23 of 23, 85 s); the CI run of the
-fix commit is recorded with the next commit.
+The C++ suite passed locally after the fix (23 of 23, 85 s). The CI run of the
+fix commit `aa1c495`
+([40826567803](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40826567803))
+passed all 33 steps in 12 min 12 s: image build 74 s and push 56 s, the four
+firmware builds 103 s, the static analysis 140 s, the Rust gate 32 s, the C++
+suite with firmware coverage 126 s and the same suite against the Rust sensor
+85 s (23 of 23 each), both results artifacts uploaded and both runs' measured
+values in the job summary.
 
 ## 6. What Phase 7 taught
 

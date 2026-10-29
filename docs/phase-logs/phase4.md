@@ -255,6 +255,18 @@ either, which is why it looked like a property of the bind mount in Phase 3.
 in every test; all four local images and the CI-built image pass 200 of 200
 tries. The Phase 3 log carries a correction.
 
+The second run, for the Phase 4 commit
+([40799295827](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40799295827)), passed all 25
+steps in 6 min 10 s: image build and push 2.5 min, the four firmware builds
+1.7 min, the allocator check 2 s, the six `vcan` steps 71 s with the new
+host-tools step at 9 s. Its `network-logs` artifact holds the runner's own
+recording, the quietest of the three runs in this log: 2042 frames in 8.0 s,
+periodic load 4.00 % against the 4.00 % nominal, SENSOR_DATA period 10.000 ms
+with a standard deviation of 0.062 ms (min 9.44, max 10.56 ms), echo round
+trip p50 0.58/0.59 ms and p99 1.11/1.16 ms with 200 of 200 answered by each
+ECU, every turnaround zero, both ECUs RUNNING with `safe_state_entries=0`. The
+analysis tables are in RESULTS.md section 1.4.
+
 ## 7. What the simulator taught
 
 Every echo response carries `turnaround = 0 µs`. On `native_sim`,

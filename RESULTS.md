@@ -125,6 +125,54 @@ same probe would measure the two frames' bus time (95 and 103 bits, about
 0.2 ms each at 500 kbit/s) plus a real interrupt-to-thread-to-transmit path,
 and the turnaround field would be filled from the cycle counter.
 
+### 1.4 The same command on a GitHub-hosted runner
+
+CI runs the same command (`tools/dev.sh python3 tools/record_and_analyze.py
+--retries 2`, the last `vcan` step of `.github/workflows/ci.yml`) on a
+GitHub-hosted runner. The run for the Phase 4 commit
+([40799295827](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40799295827)) passed on
+its first attempt, and its `network-logs` artifact holds `bus.log`, `bus.csv`,
+`analysis.json` and the console output. The analysis of that recording, the
+quietest of the three runs (SENSOR_DATA standard deviation 0.062 ms against
+0.10 and 0.43 ms in sections 1.1 and 1.2):
+
+```
+capture: bus.log: 2042 frames over 8.000 s on vcan0; unknown identifiers: none
+protection: 1442 protected frames, dlc faults 0, crc faults 0, repeated counters 0, out-of-sequence 0, frames lost per the counters 0
+every timing number below: measured on a simulated bus (Linux vcan) on a desktop OS, not on real-time hardware
+
+bus load at 500 kbit/s (CAN 2.0A, 11-bit identifiers: what this traffic would occupy on a real bus; vcan has no bit rate)
+  message                     id  frames  rate/s dlc    bit/s   share  worst-case bit/s
+  CONTROLLER_COMMAND       0x080     401    50.1   8     5564   20.2 %              6767
+  SENSOR_DATA              0x100     801   100.1   8    11114   40.4 %             13516
+  BATTERY_STATUS           0x110      80    10.0   8     1110    4.0 %              1350
+  SENSOR_HEARTBEAT         0x200      80    10.0   8     1110    4.0 %              1350
+  CONTROLLER_HEARTBEAT     0x201      80    10.0   8     1110    4.0 %              1350
+  ECHO_REQUEST             0x300     200    25.0   6     2375    8.6 %              2875
+  SENSOR_ECHO_RESPONSE     0x301     200    25.0   7     2575    9.4 %              3125
+  CONTROLLER_ECHO_RESPONSE 0x302     200    25.0   7     2575    9.4 %              3125
+  total 27532 bit/s = 5.51 % of 500 kbit/s (worst-case stuffing 6.69 %)
+  periodic messages 4.00 % measured vs 4.00 % nominal from the DBC cycle times (4.86 % worst case); busiest 100 ms window 7.61 %
+
+period and jitter in ms (consecutive frames of one identifier; gaps: periods over 3 x nominal, a process not scheduled)
+  message                  nominal      n  rate/s     mean    std     min      max     p50     p99 peak dev  gaps
+  CONTROLLER_COMMAND          20.0    401    50.0   19.999  0.070   19.75    20.24   20.00   20.17     0.25     0
+  SENSOR_DATA                 10.0    801   100.0   10.000  0.062    9.44    10.56   10.01   10.13     0.56     0
+  BATTERY_STATUS             100.0     80    10.0  100.003  0.301   98.91   100.22  100.09  100.21     1.09     0
+  SENSOR_HEARTBEAT           100.0     80    10.0  100.003  0.270   99.10   100.21  100.09  100.21     0.90     0
+  CONTROLLER_HEARTBEAT       100.0     80    10.0  100.001  0.286   98.90   100.35  100.09  100.31     1.10     0
+  event-driven: CONTROLLER_ECHO_RESPONSE x200, ECHO_REQUEST x200, SENSOR_ECHO_RESPONSE x200
+
+responder         sent  answ  unm   rtt min     p50     p90     p99     max   turnaround p50     p99   rtt-turnaround p50     p99
+CONTROLLER_ECU     200   200    0     0.047   0.594   1.064   1.157   1.170            0.000   0.000                0.594   1.157
+SENSOR_ECU         200   200    0     0.066   0.579   1.029   1.114   1.122            0.000   0.000                0.579   1.114
+all in ms. rtt: ECHO_REQUEST on the bus to the response on the bus (kernel timestamps); turnaround: the ECU's own receive-to-transmit time from its response; the difference is the kernel, the CAN driver and the OS scheduling of the ECU process
+turnaround is 0 in every response: the ECU's code ran in zero simulated time, as it does on Zephyr's native_sim, so the whole round trip is host time (the field is informative on hardware)
+```
+
+Both ECUs finished RUNNING with `safe_state_entries=0`, `echo_responses=200`,
+`dropped=0` and `wdt skipped=0`; `RESULT: OK`.
+
 ## 2. Earlier phases
 
 The numbers from Phases 2 and 3 quoted in the README are recorded with their

@@ -27,4 +27,17 @@ TEST(Liveness, StaleThreadsShowUpInTheMask)
     EXPECT_EQ(l.stale_mask(1301), 0x2U);
 }
 
+TEST(Liveness, WindowFromARuntimeValue)
+{
+    volatile std::uint32_t window = 300;
+    ecu::Liveness<3> l(window);
+    EXPECT_EQ(l.window_ms(), 300U);
+    EXPECT_EQ(l.stale_mask(0), 0x7U);
+    for (std::size_t thread = 0; thread < 3; ++thread) {
+        l.check_in(thread, 10);
+    }
+    EXPECT_TRUE(l.all_alive(310));
+    EXPECT_FALSE(l.all_alive(311)) << "the window is inclusive";
+}
+
 }  // namespace

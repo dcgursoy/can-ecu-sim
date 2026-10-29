@@ -223,6 +223,14 @@ TEST(Messages, OutOfTableEnumValuesAreKept)
     EXPECT_STREQ(proto::to_string(back.sensor_status), "UNKNOWN");
 }
 
+TEST(Messages, EveryEnumNamesAnOutOfTableValue)
+{
+    EXPECT_STREQ(proto::to_string(static_cast<proto::CanState>(7)), "UNKNOWN");
+    EXPECT_STREQ(proto::to_string(static_cast<proto::NodeState>(7)), "UNKNOWN");
+    EXPECT_STREQ(proto::to_string(static_cast<proto::ControllerMode>(7)), "UNKNOWN");
+    EXPECT_STREQ(proto::to_string(static_cast<proto::SensorStatus>(7)), "UNKNOWN");
+}
+
 TEST(Messages, FieldInfoDescribesTheLayout)
 {
     const auto& fields = proto::SensorData::kFields;

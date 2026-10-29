@@ -178,6 +178,23 @@ TEST(NodeStateMachine, FaultIsLatchedUntilReset)
     EXPECT_EQ(sensor.state(), NodeState::kRunning);
 }
 
+TEST(NodeStateMachine, ResetOutsideFaultIsIgnoredAndThePolicyCanComeFromRuntimeValues)
+{
+    volatile std::uint32_t hold = 250;
+    const NodePolicy policy{true, hold};
+    NodeStateMachine sm(policy);
+    sm.start(0);
+    sm.update(healthy(), 1);
+    sm.reset(2);  // not in FAULT: nothing happens, nothing is counted
+    EXPECT_EQ(sm.state(), NodeState::kRunning);
+    EXPECT_EQ(sm.transitions(), 1U);
+    sm.update(lost(), 10);
+    sm.update(healthy(), 20);
+    EXPECT_FALSE(sm.update(healthy(), 269));
+    EXPECT_TRUE(sm.update(healthy(), 270)) << "the hold time is the policy's: 250 ms here";
+    EXPECT_EQ(sm.state(), NodeState::kRunning);
+}
+
 TEST(NodeStateMachine, SensorPolicyDegradesInsteadOfSafeState)
 {
     NodeStateMachine sm(kSensor);

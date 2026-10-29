@@ -45,9 +45,10 @@ TEST(TimeoutMonitor, WaitingIsNeitherAliveNorLost)
     m.start(0);
     EXPECT_FALSE(m.alive(0x100));
     EXPECT_FALSE(m.lost(0x100));
-    m.tick(20, [](const ecu::TimeoutMonitor<2>::Entry&) {});
+    const auto ignore = [](const ecu::TimeoutMonitor<2>::Entry&) {};
+    m.tick(20, ignore);
     EXPECT_FALSE(m.lost(0x100)) << "still inside the first deadline";
-    m.tick(36, [](const ecu::TimeoutMonitor<2>::Entry&) {});
+    m.tick(36, ignore);
     EXPECT_TRUE(m.lost(0x100));
     m.note_received(0x100, 40);
     EXPECT_TRUE(m.alive(0x100));
@@ -95,17 +96,37 @@ TEST(TimeoutMonitor, AllAliveAndUnknownIds)
     EXPECT_EQ(m.age_ms(0x7E0, 10), -1);
 }
 
+TEST(TimeoutMonitor, ConfigurationFromRuntimeValues)
+{
+    // A configuration the compiler cannot fold (the firmware's role tables are
+    // constants; on a target without constant initialisation the constructor
+    // runs at boot).
+    volatile std::uint32_t timeout = 70;
+    const std::array<ecu::MonitoredMessage, 2> cfg{{{0x080, timeout, "CONTROLLER_COMMAND"}, {0x201, 350, "CONTROLLER_HEARTBEAT"}}};
+    ecu::TimeoutMonitor<2> m(cfg);
+    EXPECT_EQ(m.find(0x080)->cfg.timeout_ms, 70U);
+    EXPECT_STREQ(m.entries()[1].cfg.name, "CONTROLLER_HEARTBEAT");
+    m.start(0);
+    Recorder r;
+    m.tick(70, r);
+    EXPECT_TRUE(r.lost.empty());
+    m.tick(71, r);
+    ASSERT_EQ(r.lost.size(), 1U);
+    EXPECT_EQ(r.lost[0], 0x080U);
+}
+
 TEST(TimeoutMonitor, WorksAtCompileTime)
 {
-    constexpr bool ok = [] {
+    constexpr auto scenario = [] {
         ecu::TimeoutMonitor<2> m(kCfg);
         m.start(0);
         m.note_received(0x100, 5);
         int lost = 0;
         m.tick(100, [&](const ecu::TimeoutMonitor<2>::Entry&) { ++lost; });
         return lost == 1 && !m.alive(0x100) && !m.alive(0x200);
-    }();
-    static_assert(ok, "constexpr timeout monitor");
+    };
+    static_assert(scenario(), "constexpr timeout monitor");
+    EXPECT_TRUE(scenario()) << "and the same code at run time";
 }
 
 }  // namespace

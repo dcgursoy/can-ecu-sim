@@ -265,6 +265,81 @@ TEST(CanErrorStateMachine, RefusedRecoveryRequestCountsAsFailure)
     EXPECT_EQ(sm.counters().recovery_failures, 1U);
 }
 
+// The simulated HAL (and some drivers) report a state through the callback and
+// the supervisor polls the same state on its next tick: one bus-off must stay
+// one event, and a bus-off reading during backoff, during the recovery
+// sequence or after FAULT is the condition already being handled.
+TEST(CanErrorStateMachine, BusOffReportedAgainWhileHandlingItIsOneEvent)
+{
+    CanErrorStateMachine sm(kPolicy);
+    sm.on_controller_state(CanState::kBusOff, 0);
+    sm.on_controller_state(CanState::kBusOff, 1);    // the callback fired twice
+    sm.poll_controller_state(CanState::kBusOff, 5);  // and the poll sees it as well
+    EXPECT_EQ(sm.counters().bus_off_events, 1U);
+    EXPECT_EQ(sm.phase(), Phase::kBusOffBackoff);
+    EXPECT_EQ(sm.current_backoff_ms(), 100U);
+    EXPECT_EQ(sm.tick(100), Action::kStartRecovery);
+    sm.poll_controller_state(CanState::kBusOff, 101);  // recovery sequence still running
+    EXPECT_EQ(sm.phase(), Phase::kBusOffRecovering);
+    EXPECT_EQ(sm.counters().recovery_failures, 0U);
+
+    std::int64_t t = 101;
+    while (!sm.failed()) {
+        t += 100000;
+        sm.tick(t);  // recovery timeout long elapsed: the attempt failed
+        t += 100000;
+        sm.tick(t);  // backoff long elapsed: next attempt
+    }
+    sm.on_controller_state(CanState::kErrorActive, t + 1);  // ignored while failed, but remembered
+    sm.poll_controller_state(CanState::kBusOff, t + 2);     // a reading that differs from the last report
+    sm.on_controller_state(CanState::kBusOff, t + 3);
+    EXPECT_TRUE(sm.failed());
+    EXPECT_EQ(sm.counters().bus_off_events, 1U) << "nothing is counted after FAULT";
+}
+
+TEST(CanErrorStateMachine, TickWhilePassiveOrNotYetStableDoesNothing)
+{
+    CanErrorStateMachine sm(kPolicy);
+    sm.on_controller_state(CanState::kErrorPassive, 0);
+    EXPECT_EQ(sm.tick(50), Action::kNone);
+    EXPECT_EQ(sm.phase(), Phase::kPassive);
+    EXPECT_TRUE(sm.tx_allowed());
+    // One failed attempt, then a recovery: the attempt count survives until stable_ms.
+    sm.on_controller_state(CanState::kBusOff, 100);
+    sm.tick(200);  // first attempt
+    sm.tick(701);  // its recovery timed out: attempt 1, 200 ms backoff
+    sm.tick(901);  // second attempt
+    sm.on_controller_state(CanState::kErrorActive, 905);
+    EXPECT_EQ(sm.attempt(), 1U);
+    EXPECT_EQ(sm.tick(905 + 9999), Action::kNone);
+    EXPECT_EQ(sm.attempt(), 1U) << "not stable for stable_ms yet";
+    // reset() outside FAULT only forgets the attempt history.
+    sm.reset(906 + 9999);
+    EXPECT_EQ(sm.attempt(), 0U);
+    EXPECT_EQ(sm.phase(), Phase::kActive);
+    EXPECT_EQ(sm.current_backoff_ms(), 100U);
+}
+
+// A policy the compiler cannot see (the firmware's comes from Kconfig; on a
+// target without constant initialisation the constructor runs at boot).
+TEST(CanErrorStateMachine, PolicyFromRuntimeValues)
+{
+    volatile std::uint32_t initial = 250;
+    const BusOffPolicy policy{initial, 1000, 50, 2, 1000};
+    CanErrorStateMachine sm(policy);
+    EXPECT_EQ(sm.policy().initial_backoff_ms, 250U);
+    EXPECT_EQ(sm.current_backoff_ms(), 250U);
+    sm.on_controller_state(CanState::kBusOff, 0);
+    EXPECT_EQ(sm.tick(249), Action::kNone);
+    EXPECT_EQ(sm.tick(250), Action::kStartRecovery);
+    sm.tick(301);  // timed out: the second and last attempt follows after 500 ms
+    EXPECT_EQ(sm.current_backoff_ms(), 500U);
+    EXPECT_EQ(sm.tick(801), Action::kStartRecovery);
+    sm.tick(852);
+    EXPECT_TRUE(sm.failed());
+    EXPECT_EQ(sm.counters().recovery_attempts, 2U);
+}
+
 TEST(CanErrorStateMachine, PhaseNamesAndStoppedIsIgnored)
 {
     CanErrorStateMachine sm(kPolicy);

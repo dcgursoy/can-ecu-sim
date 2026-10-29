@@ -196,9 +196,10 @@ governed by the Linux Foundation, and has an active functional-safety effort.
    adds the proof, an `nm` check that the final ELF references none of
    `malloc`, `calloc`, `realloc` or `operator new`.
 4. *Testing infrastructure.* `ztest` and `twister` run unit tests on `native_sim`
-   with coverage, which Phase 5 needs for the kernel-dependent code (supervisor,
-   queues, CAN state machine). OS-free code such as the protocol library is
-   tested on the host with GoogleTest instead (Phase 1, see §10.4).
+   with coverage, and `native_sim` builds can be instrumented with the host's
+   gcov, which is what Phase 5 ended up using for the kernel-dependent code
+   (section 14.7). OS-free code such as the protocol library and the state
+   machines is tested on the host with GoogleTest instead (Phase 1, see §10.4).
 
 **What it costs.**
 
@@ -368,7 +369,7 @@ retried by the same rules. Phase 4 adds the host tools' unit tests (on
 python-can's in-process virtual interface) to the pytest step and, last, the
 recorded run of the plain-bus network through the logger, the live decoder and
 the echo probe with the analysis of the recording (`tools/record_and_analyze.py`,
-section 13.5). Later phases add the pytest suite, static analysis and the Rust
+section 13.5). Phase 5 adds the system test suite on the instrumented builds as the last `vcan` step, with its JUnit report, measurements, logs and firmware coverage uploaded as the `system-tests` artifact (section 14). Later phases add static analysis and the Rust
 build to the same job.
 
 ## 9. Phase plan and exit criteria
@@ -380,7 +381,7 @@ build to the same job.
 | 2 | full firmware, both roles | shell shows status; controller enters safe state on heartbeat loss; no heap after init proven |
 | 3 | fault gateway and HAL error hook | each fault type demonstrated and mapped to real-bus behaviour in `docs/` |
 | 4 | logger, live decoder, analysis | bus load, period/jitter and echo RTT percentiles reported from a recorded run |
-| 5 | pytest suite, firmware unit tests (ztest on `native_sim`) for the supervisor and CAN state machine, firmware coverage | the seven test groups pass and print measured values; coverage reported (the protocol library's host tests are Phase 1) |
+| 5 | pytest suite, unit tests of the protocol and state-machine code with coverage, firmware coverage under the suite (built as planned except that the kernel-dependent code is covered by instrumented `native_sim` builds under the suite instead of a `ztest` application, section 14.7) | the seven test groups pass and print measured values; coverage reported (the protocol library's host tests are Phase 1) |
 | 6 | CI complete | both targets built, all tests run, clang-tidy/cppcheck clean, artifacts uploaded |
 | 7 | Rust sensor ECU | passes the unchanged pytest suite against the C++ controller; `no_std` crate cross-compiles |
 | 8 | README, DESIGN, RESULTS | every number in the README traceable to a command and a raw log |
@@ -565,8 +566,9 @@ AUTOSAR check values anchor both to an external source.
 **Why GoogleTest on the host rather than ztest.** The protocol library has no
 Zephyr dependency, so its tests are an ordinary host executable: they build in
 seconds with the host GCC under `-Werror`, run under `ctest`, and gcovr
-instruments them without a Zephyr build or twister. ztest and twister stay for
-the kernel-dependent code (supervisor, queues, CAN state machine) in Phase 5.
+instruments them without a Zephyr build or twister. The kernel-dependent code
+(supervisor, queues, HAL) is covered in Phase 5 by instrumented `native_sim`
+builds under the system test suite (section 14.7).
 
 Finally the smoke test closes the loop on the live bus: the firmware (C++,
 built for `native_sim` with the host GCC as a 32-bit Linux process) sends
@@ -1173,3 +1175,235 @@ emits a format the project's own readers did not accept; both were found by
 reading the first recording, not by the unit tests, which had passed on the
 virtual interface. A verified run on the real topology remains the test that
 counts for tooling, as it was for the firmware.
+
+## 14. Phase 5: the automated test suite
+
+### 14.1 What the suite is and where it runs
+
+`tests/` is a pytest suite that drives the whole network: both ECU processes,
+the Phase 3 gateway between them and a `candump` on each segment, inside the
+dev container (`tools/dev.sh python3 -m pytest tests -v`, or
+`tools/run-system-tests.sh`, which adds the JUnit report and, with
+`--coverage`, the instrumented firmware builds of section 14.7). The seven
+groups of the specification are seven modules with 23 tests between
+them; one run takes about 94 s. The ECU executables are options
+(`--sensor-exe`, `--controller-exe`), started as `EXE --can-if=IFACE`, which is
+the contract the Rust sensor ECU of Phase 7 has to meet to pass the suite
+unchanged.
+
+The suite reuses the Phase 2 and 3 drivers rather than reimplementing them:
+`tools/ecu_network.py` for the ECU processes, their shells and the capture,
+`tools/fault_scenarios.py` for the gateway's control channel, the status
+snapshots and the capture analysis (gaps, decoded signal values, per-frame
+relay latency, runs of corrupted frames, loss expectations). `tests/harness.py`
+adds what a suite needs on top: a network with a lifecycle, an experiment
+abstraction, the host-stall policy and the measurement log. The expectations
+are not copied numbers: `harness.firmware_config()` reads the `CONFIG_APP_*`
+values from the `.config` next to the controller executable, so a build with a
+different timeout changes what the tests expect.
+
+### 14.2 Fixtures and lifecycle
+
+- `network` (module scope) brings up `vcan0` and `vcan1`, starts both
+  captures, the gateway, the controller and the sensor, and waits until both
+  shells report RUNNING. One fresh topology per test module, not one per
+  session: the firmware keeps history across tests that a shared process would
+  leak from one group into the next. The clearest case is the CAN error state
+  machine's stable window: a bus-off within 10 s of a recovery is "a recovery
+  that did not hold" and doubles the backoff, so the escalation test
+  (`test_bus_off_escalation.py`) has a module of its own and the single
+  recovery test waits the window out before a retry.
+- `net` (function scope) hands the network to a test with every fault cleared
+  (gateway faults and flood off, `RESET_FAULTS` to both nodes) and both ECUs
+  RUNNING again, and after the test restarts a process the test killed and
+  clears the faults once more, so a failing test cannot poison the next one.
+- `measure` (function scope) is the measurement log of section 14.3.
+- The ECU, gateway and `candump` logs are written to `/tmp` inside the
+  container while the run lasts (the simulator's console output is synchronous
+  host I/O, Phase 2's lesson) and copied to `build/test-results/system/<module>/`
+  with a timeline of the module's events when its network is torn down.
+
+### 14.3 Every measured value next to its verdict
+
+A timing test that stops at its first failed assertion reports one number;
+the useful report is all of them. `Measure` therefore collects rather than
+asserts: `check(name, value, unit, lo, hi)` records a value with a range and a
+verdict, `expect(name, ok, detail)` records a predicate with the counters
+behind it, `value(name, value)` records an informational number, and
+`verify()` at the end of the test raises with every failed row. The log is
+printed under each test as it runs (`-v`), repeated as a table at the end of
+the session, written to `build/test-results/measurements.json` and
+`measurements.md`, and attached to each test case in the JUnit report as
+properties, so CI keeps the numbers of a green run as well as a red one. Every
+limit is in the row (`[346..415]`, `[<= 25.0]`, `[expected]`), and a note
+explains where it comes from (`timeout 350 ms + supervisor tick 5 ms + 20 ms
+publish period`).
+
+### 14.4 How a test judges
+
+As in Phase 3, from three independent sources: the delta of each ECU's `ecu
+status` counters across the experiment (timeouts, CRC and counter faults,
+accepted-with-loss, lost frames, safe-state entries, the CAN state machine's
+attempts and recoveries, the hook counters), the gateway's own counters
+(received, forwarded, dropped, duplicated, corrupted, reordered, per
+identifier), and the frames captured on each segment with kernel timestamps,
+decoded with the DBC. The bus is the primary witness: detection latency is
+the time from the last delivered frame of a message to the first frame that
+publishes the reaction (`CONTROLLER_COMMAND.mode = SAFE_STATE`, a heartbeat
+with `node_state = DEGRADED`, a heartbeat with a latched error flag), which is
+what another node on a real bus would see and includes the whole chain. The
+firmware log is read where the ECU's own clock is the better witness (the time
+spent error-passive, bus-off to error-active), with `[hh:mm:ss.mmm,uuu]`
+timestamps parsed into firmware uptime.
+
+Limits are derived, not tuned. A reaction published by a periodic message can
+appear no earlier than the timeout (minus 4 ms, the firmware's own clock
+against the kernel's) and no later than timeout + supervisor tick + one period
+of the publishing message, plus a 40 ms allowance for the host scheduling of
+desktop processes; the same shape applies to recovery (hold + tick + period)
+and to the bus-off silence (backoff + the modelled 3 ms recovery sequence +
+tick + one TX slot). Where a random fault can take more than one legitimate
+course, the expected outcome is computed from the capture before the counters
+are compared, exactly as `docs/fault-model.md` section 3 describes.
+
+### 14.5 Host stalls: inconclusive, retried, never silently passed
+
+Both ECUs, the gateway and the test process are desktop processes. A gap of
+more than three periods in an ECU's own output on its own segment, outside the
+windows a test deliberately silences, means the process was not scheduled; a
+gap in the relayed `SENSOR_DATA` on the controller's segment only means the
+gateway was not. The `attempts()` loop around every experiment re-runs it (up
+to twice) when a check failed and such a stall was seen in the window, after
+clearing the faults and waiting for RUNNING; a failed check without a stall is
+a failure at once. If every attempt stalled, the test is skipped as
+inconclusive with the stall and the failed checks in the reason, the policy of
+the Phase 2 demos and the Phase 3 scenarios (`RESULT: INCONCLUSIVE`), now in
+pytest terms: a skip is visible in the report, a pass would hide the problem
+and a failure would blame the firmware for the host.
+
+### 14.6 The seven groups
+
+| Group | Module | What is injected | What is measured |
+|---|---|---|---|
+| 1 periodic timing | `test_periodic_timing.py` | nothing, 5 s of traffic | per message: period mean, std, p99, min, max and rate against the DBC cycle time; TX tick overruns and watchdog feeds; the firmware clock (heartbeat uptime) against bus time |
+| 2 missing message | `test_missing_message.py` | the gateway drops one identifier in one direction, four cases | detection latency from the last delivered frame to SAFE_STATE / DEGRADED on the bus; recovery after the first frame again; exactly one timeout counted, the right number of safe-state entries |
+| 3 CRC and counters | `test_crc_and_counters.py` | gateway corruption and duplication; firmware CORRUPT_CRC, FREEZE_COUNTER, SKIP_COUNTER; a 15 ms loss | rejections equal to the injected faults; the time until the heartbeat's error flag; DEGRADED after three consecutive rejects and RUNNING after the first good frame; a short loss counted by the counter, not the timeout |
+| 4 bus flood | `test_bus_flood.py` | 2000 unknown frames/s on the controller's segment for 2 s, then a sweep 1000/2000/4000 /s | achieved rate, share counted as unknown, receive-queue drops and high-water mark, the controller's own command period during the flood, SENSOR_DATA still accepted |
+| 5 bus-off | `test_bus_off.py`, `test_bus_off_escalation.py` | INJECT_CAN_ERROR x20, FORCE_BUS_OFF once, FORCE_BUS_OFF six times, `ecu reset` | time in error-passive against the TEC arithmetic; command silence and bus-off to error-active per attempt; the doubling backoff 100 to 1600 ms, FAULT after five, the recovery after the reset |
+| 6 heartbeat loss | `test_heartbeat_loss.py` | SUPPRESS_HEARTBEAT 600 ms; SIGKILL and restart of the sensor; STALL_THREAD until the watchdog bites | safe-state entry and the return to NORMAL; the safe values in every command meanwhile; the restarted sensor's boot time and its counters accepted from zero; the watchdog silence and the in-place reboot |
+| 7 gateway faults | `test_gateway_faults.py` | 10 % loss both ways, 20 % duplicates, 15 ± 5 ms jitter then a constant 20 ms, 20 % of SENSOR_DATA reordered | loss accounted for by counters and timeouts, duplicates rejected, latency percentiles with no timeout, out-of-sequence rejections equal to the swaps |
+
+### 14.7 Unit tests and coverage
+
+**The libraries.** Phases 1 and 2 put the protocol codec and the ECU state
+machines into OS-free header-only libraries exactly so they could be tested on
+the host; Phase 5 extends those GoogleTest suites to 77 cases and
+100 % line coverage of the library headers (100 % of
+functions, 85.4 % of branches; `tools/run-host-tests.sh`,
+`build/host-tests/coverage.txt`). The new cases are the edges the first report
+showed as missing: a bus-off reported through both the callback and the poll
+while it is already being handled, a tick while error-passive or before the
+stable window, `reset()` outside FAULT, policies built from values the compiler
+cannot see. Two of the gaps were measurement artefacts worth knowing about: a
+`constexpr` constructor called with constant arguments is evaluated by the
+compiler, so it never runs and gcov counts its lines as unexecuted, and a
+member template instantiated only inside a `static_assert` is emitted (with
+`-fkeep-inline-functions`) but never called, and gcov reports its lines
+uncovered even though other instantiations of the same lines ran. The tests
+now construct from runtime values and call the compile-time scenarios at run
+time as well, which is also a real check that the two evaluations agree.
+
+**The firmware.** The Phase 0 plan reserved `ztest` on `native_sim` for the
+kernel-dependent code. Phase 5 chose a different instrument: the normal
+firmware with its application objects compiled under gcc's coverage flags
+(`tools/build-ecu.sh native_sim <role> --coverage`, the `CAN_ECU_APP_COVERAGE`
+option of `firmware/app/CMakeLists.txt`, libgcov linked into the executable
+through the native simulator's link options exactly as Zephyr's own
+`CONFIG_COVERAGE` does it), run under the system suite. Every process writes
+its `.gcda` files when it exits (a SIGKILLed one writes none; its restarted
+successor adds its own; a watchdog reboot re-executes the image without an
+exit and loses the counters of the image it replaces, which is why the
+heartbeat-loss module runs the kill and the watchdog reset before the hook
+its surviving process handles), and `gcovr` over the
+two application object directories reports the line coverage of
+`firmware/app/src` under the suite: 90.5 % of lines, 92.7 % of
+functions (`tools/run-system-tests.sh --coverage`,
+`build/test-results/firmware-coverage.txt`). The uncovered remainder is the
+honest kind: initialisation failure paths (CAN or watchdog device not ready),
+the allocation guard's trap, the Nucleo-only branches of the HAL (manual
+recovery mode, the driver's state callback, which the simulated controller
+shadows), the echo responder (Phase 4's probes are not part of the suite) and
+the hook commands the suite does not use (`SUPPRESS_MESSAGE`, the no-op, a
+wrong magic). The alternative, a ztest application linking the application
+sources against a fake HAL, would have tested the glue in isolation at the
+cost of a second build system and a second HAL; the state machines it would
+have exercised are the ones already at 100 % under GoogleTest, and the glue is
+what the system suite exercises against the real driver. The measured coverage
+shows what the suite reaches and what it does not, which is the number that
+matters for deciding whether a path needs a test of its own.
+
+Why only the application objects: the first attempt used `CONFIG_COVERAGE`,
+which instruments the kernel and the drivers as well. Each process then wrote
+125 data files at exit, 2.5 s on the bind-mounted checkout, and the harness,
+which gives a process two seconds after SIGTERM before it kills it, lost the
+application's own files at random: the same suite reported 88 % and 85 % in
+two consecutive runs. Instrumenting the seven application objects alone brings
+the exit back to 80 ms and makes the number reproducible.
+
+### 14.8 Measured results (simulated bus on a desktop OS)
+
+From `tools/run-system-tests.sh --coverage` on 2026-10-29 (94 s, seed 1, 23 of 23 passed, no inconclusive attempt); every value with its limit and its note is in `RESULTS.md` section 2.
+
+| What | Measured | Limit |
+|---|---|---|
+| Periodic timing, SENSOR_DATA (10 ms) | mean 10.001 ms, std 0.109 ms, p99 10.3 ms, min 9.4 ms, max 10.5 ms | mean within 1 %, p99 within 10 %, every period within 25 % |
+| Periodic timing, CONTROLLER_COMMAND (20 ms) | mean 20.002 ms, std 0.104 ms, p99 20.3 ms, max 20.5 ms | same |
+| Firmware clock against bus time | 1.000 firmware ms per host ms, largest deviation 0.84 ms over 3 s | 0.995..1.005 |
+| Detection of a missing message: SENSOR_DATA lost (35 ms timeout) | reaction on the bus 51.3 ms after the last delivered frame; back to normal 521.4 ms after the first frame again | 31..100.0 / 496..565.0 ms |
+| Detection of a missing message: SENSOR_HEARTBEAT lost (350 ms timeout) | reaction on the bus 371.0 ms after the last delivered frame; back to normal 511.2 ms after the first frame again | 346..415.0 / 496..565.0 ms |
+| Detection of a missing message: BATTERY_STATUS lost (350 ms timeout, DEGRADED) | reaction on the bus 421.5 ms after the last delivered frame; back to normal 20.9 ms after the first frame again | 346..495.0 / 0..145.0 ms |
+| Detection of a missing message: CONTROLLER_COMMAND lost at the sensor (70 ms timeout, DEGRADED) | reaction on the bus 168.7 ms after the last delivered frame; back to normal 69.0 ms after the first frame again | 66..215.0 / 0..145.0 ms |
+| Corrupted frames (gateway, 10 % of sensor frames) | 22 rejected, 22 corrupted of 422; 0 timeouts, 0 safe-state entries | exact counts |
+| CRC fault published in the heartbeat flags | 61.9 ms after the first bad frame | 0..145.0 ms |
+| Stale counter (frozen x2) and duplicates (20 %) | 2 frozen, 2 stale on the bus, 2 rejected; 41 rejected, 41 duplicated of 362; flag after 72.1 ms | exact counts |
+| Skipped counter (x3) and a 15 ms loss | 3 skipped, 3 accepted with loss, 3 lost; 2 dropped, 2 lost, 0 in timeout gaps | exact counts |
+| Three consecutive bad BATTERY_STATUS frames | DEGRADED 20.9 ms after the third, RUNNING 20.9 ms after the first good frame | 0..145 ms |
+| Flood, 2000 unknown frames/s for 2 s on the controller's segment | 1999.9 frames/s achieved, 100.0 % counted, 0 dropped, queue high-water mark 5/32; CONTROLLER_COMMAND period p99 20.3 ms, max 20.7 ms; SENSOR_DATA still accepted at 99.9 /s | no drops, p99 within 10 % |
+| Flood sweep 1000 / 2000 / 4000 frames/s | achieved 999.9 / 1999.6 / 3999.4 frames/s, 100 % counted, nothing dropped, command period max 20.4 / 20.2 / 20.2 ms | no drops, max within 25 % |
+| Error-passive (INJECT_CAN_ERROR x20, TEC 160) | visible in the heartbeat after 31.0 ms; 530.0 ms in error-passive (550 expected from TEC arithmetic); commands kept flowing at 50.0 /s | 490.0..610.0 ms |
+| Bus-off and recovery (FORCE_BUS_OFF) | command silence 140.0 ms; bus-off to error-active 105.0 ms in the firmware log; SAFE_STATE entered, NORMAL again 499.9 ms after the first command | 100..168.0 / 496..565.0 ms |
+| Repeated bus-off: doubling backoff, FAULT, `ecu reset` | silences 140.0 / 220.0 / 420.0 / 820.0 / 1620.2 ms, FAULT on the sixth with transmission stopped; after `ecu reset` first command 127.4 ms, NORMAL 627.4 ms | 100 / 200 / 400 / 800 / 1600 ms + 68; reset 100..188 / 600..693 ms |
+| Heartbeat loss (SUPPRESS_HEARTBEAT 600 ms) | SAFE_STATE 374.8 ms after the last heartbeat, NORMAL 513.9 ms after the first again; 42 commands over 840 ms with actuators off, brake hold, speed limit 0 | 346..415.0 / 496..565.0 ms |
+| Sensor process killed and restarted | SAFE_STATE 50.0 ms after the last SENSOR_DATA; restarted sensor's first frame 19.2 ms after the process start; NORMAL 507.5 ms after its first heartbeat; counters from zero accepted | 31..100.0 / 496..565.0 ms |
+| Stalled TX thread (STALL_THREAD 1500 ms) | feed withheld 295.0 ms after the stall, watchdog reset 1301.6 ms after the last frame, first frame 11.6 ms after the reboot (1313.2 ms of silence in all); same process, controller safe state once | 290..330 / 1290..1330 ms |
+| Random loss, 10 % both ways for 3 s | 36 vs 36 + 0 (SENSOR_DATA); 4 vs 4 + 0 (SENSOR_HEARTBEAT); 16 vs 13 + 3 (CONTROLLER_COMMAND); dropped = lost by counter + frames inside timeout gaps | exact accounting |
+| Duplicates, 20 % for 2 s | 34 rejected, 34 duplicated of 362 | exact |
+| Delay 15 +/- 5 ms, then a constant 20 ms | SENSOR_DATA latency p1 10.4 ms, median 15.6 ms, p99 20.2 ms, no timeout; 20 ms step: largest gap 30.2 ms, no timeout | median 13..17, p99 <= 23; gap <= 34 ms |
+| Reordering, 20 % of SENSOR_DATA for 2 s | 31 swaps: 31 out-of-sequence rejections, 31 accepted with loss, 31 lost | exact |
+
+### 14.9 What Phase 5 taught
+
+- **Test history is state.** The firmware remembers things across tests that
+  a test cannot see from the outside: the time of the last bus-off recovery
+  decides whether the next bus-off is a fresh event or a failed attempt. A
+  suite that shares one process between tests inherits that history; a fresh
+  process per module costs two seconds of boot and buys independence.
+- **Every limit should name its mechanism.** Writing each limit as timeout +
+  supervisor tick + publishing period + host allowance made the three
+  first-run failures diagnosable from their numbers alone: 220 ms against a
+  100 ms backoff is a doubling, not jitter.
+- **Coverage tools count what ran, and `constexpr` code does not always run.**
+  Constructors evaluated by the compiler and template instantiations used only
+  in `static_assert`s report as uncovered lines; the fix (running the same
+  code at run time as well) is also a test that the two evaluations agree.
+- **The system suite is the right place to measure firmware coverage.** The
+  instrumented `native_sim` build costs one extra build and shows which
+  firmware paths the suite actually drives, which a unit test of the glue
+  could not have told.
+- **Measure the instrument before trusting it.** Two runs of the same suite
+  reporting 88 % and 85 % firmware coverage were not the suite changing but
+  coverage data lost at exit; the exit time of an instrumented process (2.5 s
+  against 5 ms) was the number that explained it.
+- **Skip is a verdict.** An inconclusive run on a loaded desktop is neither a
+  pass nor a firmware failure; recording it as a skip with the stall and the
+  failed checks in the reason keeps the report honest and the retry visible.

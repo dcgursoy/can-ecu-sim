@@ -48,6 +48,23 @@ foreach(sym ${alloc_wrapped_symbols})
     zephyr_ld_options(-Wl,--wrap=${sym})
 endforeach()
 
+# Line coverage of the application under the system test suite (Phase 5):
+# instrument only the application objects with gcov, not the kernel and the
+# drivers (CONFIG_COVERAGE would instrument everything: 125 data files written
+# at every exit, seconds on a bind-mounted checkout, and data lost whenever a
+# test harness kills a process that is still writing). The flags are the ones
+# Zephyr's own coverage support uses; libgcov reaches the final executable
+# through the native simulator's link options, as with CONFIG_COVERAGE.
+# Built by tools/build-ecu.sh native_sim <role> --coverage into build/<...>_cov/.
+option(CAN_ECU_APP_COVERAGE "Instrument the application sources with gcov (native_sim only)" OFF)
+if(CAN_ECU_APP_COVERAGE)
+    if(NOT CONFIG_NATIVE_BUILD)
+        message(FATAL_ERROR "CAN_ECU_APP_COVERAGE needs a native_sim build (the host's gcov)")
+    endif()
+    target_compile_options(app PRIVATE $<TARGET_PROPERTY:compiler,coverage>)
+    target_link_options(native_simulator INTERFACE $<TARGET_PROPERTY:linker,coverage>)
+endif()
+
 # Platform-independent libraries (header-only): the generated protocol codec and
 # the ECU state machines, both unit tested on the host (firmware/lib).
 target_include_directories(app PRIVATE

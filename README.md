@@ -7,11 +7,11 @@ Rust as a cross-language conformance check. Pure software: the ECUs are Zephyr
 `native_sim` processes on a Linux virtual CAN bus (`vcan`) inside a Docker dev
 container, so the whole network runs identically on any machine and in CI.
 
-> Status: **Phase 4 of 8** (host tooling: logger, live decoder, analysis). See
+> Status: **Phase 5 of 8** (automated pytest suite, unit-test coverage). See
 > [DESIGN.md](DESIGN.md) for every design decision and the phase plan, and
 > [RESULTS.md](RESULTS.md) for the raw data behind every number below.
 
-## What is here after Phase 4
+## What is here after Phase 5
 
 - `can/network.dbc` the network: sensor data (10 ms), battery status (100 ms),
   controller command (20 ms), a heartbeat per ECU, an echo request/response
@@ -25,7 +25,8 @@ container, so the whole network runs identically on any machine and in CI.
   monitor, protected-message acceptance policy, CAN error state machine with
   bus-off backoff and attempt limit, node state machine (BOOT, RUNNING,
   DEGRADED, SAFE_STATE, FAULT), thread liveness, and an ISO 11898-1 error
-  counter model for the simulator. 70 GoogleTests cover both libraries.
+  counter model for the simulator. 77 GoogleTests cover both libraries
+  at 100 % line coverage.
 - `firmware/app/` the Zephyr application. One codebase, the ECU role chosen by
   Kconfig. Three threads (CAN receive, periodic transmit, supervisor) with
   justified priorities, a HAL for the CAN controller and the watchdog, a
@@ -66,11 +67,24 @@ container, so the whole network runs identically on any machine and in CI.
 - `tools/record_and_analyze.py` runs the network through all four tools at
   once and checks the recording against the DBC and the ECUs' own counters.
   Its output is the raw data in [RESULTS.md](RESULTS.md).
+- `tests/` the automated system test suite (pytest): fixtures start both ECUs,
+  the gateway and a `candump` per segment, and tear everything down; seven
+  test groups (periodic timing, missing-message detection time, bad CRCs and
+  stale or skipped counters, a flooded bus, error-passive and bus-off with
+  recovery time, heartbeat loss into the safe state, and dropped, duplicated,
+  delayed and reordered frames from the gateway), 23 tests in all,
+  every measured value logged next to its pass or fail verdict, with the
+  expectations derived from the firmware build's own `.config`. A host stall
+  (a desktop process not scheduled) makes a test inconclusive and retried, not
+  failed. Results land in `build/test-results/` (JUnit, `measurements.json`,
+  `measurements.md`, the logs of every module). `tools/run-system-tests.sh
+  --coverage` runs the suite on gcov-instrumented firmware builds and reports
+  the line coverage of the firmware under it.
 - `.github/workflows/ci.yml` builds the image, checks the generated code,
   runs the Python and C++ unit tests with coverage, builds all four firmware
-  images, checks them for allocators, and runs the smoke test, the three
-  network demos, the fault scenarios and the recorded run with the host tools
-  on vcan.
+  images, checks them for allocators, runs the smoke test, the three network
+  demos, the fault scenarios and the recorded run with the host tools on vcan,
+  and then the system test suite with firmware coverage, uploading its results.
 
 ## Quick start
 
@@ -205,6 +219,23 @@ Windows/Linux only.
    with `tools/dev.sh tools/gen-all.sh`; CI fails if the committed copies are
    stale.
 
+7. **Run the system test suite** (about 94 s; the seven groups against
+   both ECUs through the gateway, every measured value printed next to its
+   verdict, results in `build/test-results/`):
+
+   ```bash
+   tools/dev.sh python3 -m pytest tests -v
+   ```
+
+   `-k bus_off` picks a group, `--seed` changes the gateway's random faults.
+   The same suite on gcov-instrumented firmware builds, with the JUnit report
+   and the firmware's line coverage under the suite in
+   `build/test-results/firmware-coverage.txt`:
+
+   ```bash
+   tools/dev.sh tools/run-system-tests.sh --coverage
+   ```
+
 To poke around interactively, `tools/dev.sh` with no arguments opens a shell in
 the container; inside it `tools/vcan-up.sh` creates `vcan0` and `vcan1`, then
 `build/native_sim_sensor/zephyr/zephyr.exe --can-if=vcan0 &` and
@@ -222,7 +253,7 @@ container, whose `postStartCommand` runs `vcan-up.sh`.
 .github/         CI                         firmware/lib/        protocol codec + ECU logic, host-tested
 can/             network.dbc, generators,   gateway/             fault-injection gateway (Phase 3)
                  Python reference           host/                logger, decoder, echo probe, analysis
-tools/           wrappers, vcan, demos      tests/               pytest suite (Phase 5)
+tools/           wrappers, vcan, demos      tests/               system test suite (pytest, seven groups)
 docs/            phase logs, tool versions  rust/                Rust sensor ECU (Phase 7)
 RESULTS.md       raw data behind the numbers below
 ```
@@ -243,12 +274,27 @@ host's scheduler and the simulator's 1 ms driver poll and vary from run to run
 | SENSOR_DATA period, nominal 10 ms | mean 10.001 ms, std 0.10 ms, p99 10.25 ms, worst 10.53 ms (std 0.43, worst 11.43) | same | same |
 | CONTROLLER_COMMAND period, nominal 20 ms | mean 20.001 ms, std 0.08 ms, p99 20.26 ms, worst 20.32 ms (std 0.47, worst 21.35) | same | same |
 | Echo round trip, host → ECU → host | sensor p50 0.54 ms, p99 1.16 ms; controller p50 0.58 ms, p99 1.20 ms; 200 of 200 answered by each (p50 0.71 / 0.72, p99 2.2) | same | same |
-| Safe state when the sensor heartbeat is lost | SAFE_STATE 374.7 ms after the last heartbeat (timeout 350 ms); NORMAL 514.6 ms after the first heartbeat again (hold 500 ms) | `tools/dev.sh python3 tools/fault_scenarios.py --scenarios drop-heartbeat` | [phase3.md](docs/phase-logs/phase3.md) |
-| Safe state when the sensor process dies | SAFE_STATE 54.1 ms after the last SENSOR_DATA (timeout 35 ms); NORMAL 525 ms after the restarted sensor's first heartbeat | `tools/dev.sh python3 tools/ecu_network.py safe-state` | [phase2.md](docs/phase-logs/phase2.md) |
-| Bus-off recovery of the simulated controller | recovered in 103 ms; one 120 ms command gap on the bus | `tools/dev.sh python3 tools/ecu_network.py bus-off` | [phase2.md](docs/phase-logs/phase2.md) |
-| Stalled transmit thread | watchdog reset after 1313 ms of silence (300 ms liveness window + 1000 ms timeout) | `tools/dev.sh python3 tools/fault_scenarios.py --scenarios hook-stall-thread` | [phase3.md](docs/phase-logs/phase3.md) |
 | Gateway relay latency, no faults | median 0.13 ms, p99 0.27 ms (Python relay) | `tools/dev.sh python3 tools/fault_scenarios.py --scenarios baseline` | [phase3.md](docs/phase-logs/phase3.md) |
-| Random loss, 10 % both ways for 3 s | all 50 lost frames accounted for by the receivers' counters | `tools/dev.sh python3 tools/fault_scenarios.py --scenarios drop-random` | [phase3.md](docs/phase-logs/phase3.md) |
+| Missing SENSOR_DATA detected (timeout 35 ms) | reaction on the bus 51.3 ms after the last delivered frame; back to normal 521.4 ms after the first frame again | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Missing SENSOR_HEARTBEAT detected (timeout 350 ms) | reaction on the bus 371.0 ms after the last delivered frame; back to normal 511.2 ms after the first frame again | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Missing BATTERY_STATUS detected (timeout 350 ms, DEGRADED) | reaction on the bus 421.5 ms after the last delivered frame; back to normal 20.9 ms after the first frame again | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Missing CONTROLLER_COMMAND detected by the sensor (timeout 70 ms) | reaction on the bus 168.7 ms after the last delivered frame; back to normal 69.0 ms after the first frame again | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Safe state when the sensor heartbeat is lost | SAFE_STATE 374.8 ms after the last heartbeat, NORMAL 513.9 ms after the first again; 42 commands over 840 ms with actuators off, brake hold, speed limit 0 | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Safe state when the sensor process dies, recovery after its restart | SAFE_STATE 50.0 ms after the last SENSOR_DATA; restarted sensor's first frame 19.2 ms after the process start; NORMAL 507.5 ms after its first heartbeat; counters from zero accepted | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Stalled transmit thread, watchdog reset | feed withheld 295.0 ms after the stall, watchdog reset 1301.6 ms after the last frame, first frame 11.6 ms after the reboot (1313.2 ms of silence in all); same process, controller safe state once | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Error-passive entry and healing | visible in the heartbeat after 31.0 ms; 530.0 ms in error-passive (550 expected from TEC arithmetic); commands kept flowing at 50.0 /s | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Bus-off recovery of the simulated controller | command silence 140.0 ms; bus-off to error-active 105.0 ms in the firmware log; SAFE_STATE entered, NORMAL again 499.9 ms after the first command | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Repeated bus-off: backoff doubling, FAULT latch, `ecu reset` | silences 140.0 / 220.0 / 420.0 / 820.0 / 1620.2 ms, FAULT on the sixth with transmission stopped; after `ecu reset` first command 127.4 ms, NORMAL 627.4 ms | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Flood of 2000 unknown frames/s on the controller's segment | 1999.9 frames/s achieved, 100.0 % counted, 0 dropped, queue high-water mark 5/32; CONTROLLER_COMMAND period p99 20.3 ms, max 20.7 ms; SENSOR_DATA still accepted at 99.9 /s | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Flood sweep 1000 / 2000 / 4000 frames/s | achieved 999.9 / 1999.6 / 3999.4 frames/s, 100 % counted, nothing dropped, command period max 20.4 / 20.2 / 20.2 ms | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Corrupted frames rejected by CRC | 22 rejected, 22 corrupted of 422; 0 timeouts, 0 safe-state entries | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| CRC fault published in the heartbeat flags | 61.9 ms after the first bad frame | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Stale counter and duplicated frames rejected | 2 frozen, 2 stale on the bus, 2 rejected; 41 rejected, 41 duplicated of 362; flag after 72.1 ms | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Random loss, 10 % both ways for 3 s, accounted for | 36 vs 36 + 0 (SENSOR_DATA); 4 vs 4 + 0 (SENSOR_HEARTBEAT); 16 vs 13 + 3 (CONTROLLER_COMMAND); dropped = lost by counter + frames inside timeout gaps | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Latency 15 ± 5 ms and a constant 20 ms: no loss | SENSOR_DATA latency p1 10.4 ms, median 15.6 ms, p99 20.2 ms, no timeout; 20 ms step: largest gap 30.2 ms, no timeout | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Reordered SENSOR_DATA rejected out of sequence | 31 swaps: 31 out-of-sequence rejections, 31 accepted with loss, 31 lost | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| SENSOR_DATA period under the suite (10 ms) | mean 10.001 ms, std 0.109 ms, p99 10.3 ms, min 9.4 ms, max 10.5 ms | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
+| Firmware clock against bus time | 1.000 firmware ms per host ms, largest deviation 0.84 ms over 3 s | `tools/dev.sh tools/run-system-tests.sh --coverage` | [RESULTS.md §2](RESULTS.md#2-phase-5-the-system-test-suite-every-measured-value) |
 
 ## License
 

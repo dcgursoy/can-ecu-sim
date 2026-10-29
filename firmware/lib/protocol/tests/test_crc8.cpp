@@ -64,6 +64,15 @@ TEST(Crc8, IsComputedAtCompileTime)
 {
     constexpr std::array<std::uint8_t, 9> digits{'1', '2', '3', '4', '5', '6', '7', '8', '9'};
     static_assert(compute(digits) == proto::crc8::kCheckValue, "constexpr CRC must match the check value");
+    // The same overload at run time, on data the compiler cannot fold.
+    const auto copy = digits;
+    EXPECT_EQ(compute(copy), proto::crc8::kCheckValue);
+    // The table is built once at compile time; building it at run time gives the
+    // same bytes (called through a volatile pointer so the compiler cannot fold
+    // the constexpr call into its constant).
+    std::array<std::uint8_t, 256> (*volatile build)() = &proto::crc8::make_table;
+    const auto built = build();
+    EXPECT_EQ(built, proto::crc8::kTable);
 }
 
 // The Python reference (can/e2e_ref.py) computed the CRC of random frames

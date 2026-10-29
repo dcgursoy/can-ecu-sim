@@ -133,6 +133,13 @@ jobs:
       - name: Host tools on vcan, logger, live decoder and echo probes, analysis of the recording
         run: tools/dev.sh python3 tools/record_and_analyze.py --retries 2
 
+      # The pytest system suite (tests/): the seven test groups against both ECUs
+      # on vcan through the gateway, every measured value logged next to its
+      # verdict, run on gcov-instrumented firmware builds so the line coverage of
+      # the kernel-dependent firmware code under the suite is reported as well.
+      - name: System test suite on vcan (pytest, seven groups) with firmware coverage
+        run: tools/dev.sh tools/run-system-tests.sh --coverage
+
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -160,4 +167,12 @@ jobs:
         with:
           name: network-logs
           path: build/network-logs/
+          if-no-files-found: warn
+
+      - name: Upload system test results (JUnit, measurements, logs, firmware coverage)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: system-tests
+          path: build/test-results/
           if-no-files-found: warn

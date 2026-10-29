@@ -138,15 +138,17 @@ TEST(E2e, CounterStatusNames)
 
 TEST(E2e, WorksAtCompileTime)
 {
-    constexpr auto frame = [] {
+    constexpr auto protected_command = [] {
         proto::ControllerCommand cmd{};
         cmd.torque_cmd = -100;
         cmd.mode = proto::ControllerMode::kSafeState;
         return proto::e2e::protect(cmd, 5);
-    }();
+    };
+    constexpr auto frame = protected_command();
     static_assert(proto::e2e::crc_ok(proto::ControllerCommand::kId, frame), "constexpr protect/check");
     static_assert(proto::e2e::counter_of(frame) == 5, "constexpr counter");
     static_assert(proto::ControllerCommand::from_frame(frame).mode == proto::ControllerMode::kSafeState, "constexpr from_frame");
+    EXPECT_EQ(protected_command(), frame) << "and the same code at run time";
 }
 
 }  // namespace

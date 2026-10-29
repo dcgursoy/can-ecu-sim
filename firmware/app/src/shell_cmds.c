@@ -70,6 +70,7 @@ static int cmd_reset(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* NOLINTBEGIN(bugprone-branch-clone): inside Zephyr's SHELL_CMD/SHELL_CMD_REGISTER expansions */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_ecu,
 	SHELL_CMD(status, NULL, "Node, CAN, traffic and watchdog status with error counters", cmd_status),
 	SHELL_CMD(reset, NULL,
@@ -79,3 +80,4 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_ecu,
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(ecu, &sub_ecu, "ECU diagnostics", NULL);
+/* NOLINTEND(bugprone-branch-clone) */

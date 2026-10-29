@@ -70,6 +70,7 @@ public:
 
     /// Advance time; `on_lost(entry)` is called once per newly lost message.
     template <class F>
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward): called once per lost entry, must not be moved from
     constexpr void tick(std::int64_t now_ms, F&& on_lost)
     {
         for (auto& e : entries_) {

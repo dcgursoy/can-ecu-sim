@@ -180,7 +180,7 @@ TEST(NodeStateMachine, FaultIsLatchedUntilReset)
 
 TEST(NodeStateMachine, ResetOutsideFaultIsIgnoredAndThePolicyCanComeFromRuntimeValues)
 {
-    volatile std::uint32_t hold = 250;
+    const volatile std::uint32_t hold = 250;
     const NodePolicy policy{true, hold};
     NodeStateMachine sm(policy);
     sm.start(0);

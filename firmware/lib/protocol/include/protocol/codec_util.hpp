@@ -7,6 +7,7 @@
 // tests check them bit for bit against cantools.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -93,7 +94,9 @@ constexpr std::int32_t phys_to_raw(float phys, float scale, float offset, std::i
     } else if (remainder <= -0.5F) {
         --rounded;
     }
-    return rounded < raw_min ? raw_min : (rounded > raw_max ? raw_max : rounded);
+    // The float saturation above keeps the rounded value in range; the clamp
+    // states the invariant rather than relying on that argument.
+    return std::clamp(rounded, raw_min, raw_max);
 }
 
 }  // namespace proto::codec

@@ -45,7 +45,16 @@ constexpr float kTorqueLimitNm = 50.0F;
 constexpr float kSteeringGainDegPerDps = -0.5F;
 constexpr float kSteeringLimitDeg = 30.0F;
 
-constexpr float clamp(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+constexpr float clamp(float v, float lo, float hi)
+{
+    if (v < lo) {
+        return lo;
+    }
+    if (v > hi) {
+        return hi;
+    }
+    return v;
+}
 
 proto::ControllerMode to_mode(proto::NodeState state)
 {
@@ -98,7 +107,7 @@ bool handle_frame(const can_frame& frame, std::int64_t now_ms)
     case proto::SensorData::kId: {
         proto::SensorData data{};
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             result = g_sensor_rx.receive(frame.data, frame.dlc, data);
             if (ecu::accepted(result)) {
                 shared().monitor.note_received(frame.id, now_ms);
@@ -112,7 +121,7 @@ bool handle_frame(const can_frame& frame, std::int64_t now_ms)
     case proto::BatteryStatus::kId: {
         proto::BatteryStatus battery{};
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             result = g_battery_rx.receive(frame.data, frame.dlc, battery);
             if (ecu::accepted(result)) {
                 shared().monitor.note_received(frame.id, now_ms);
@@ -126,7 +135,7 @@ bool handle_frame(const can_frame& frame, std::int64_t now_ms)
     case proto::SensorHeartbeat::kId: {
         proto::SensorHeartbeat hb{};
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             result = g_heartbeat_rx.receive(frame.data, frame.dlc, hb);
             if (ecu::accepted(result)) {
                 shared().monitor.note_received(frame.id, now_ms);
@@ -152,7 +161,7 @@ void periodic_tx(std::uint32_t tick, std::int64_t now_ms)
         bool have_sensor = false;
         bool have_battery = false;
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             state = shared().node.state();
             sensor = g_sensor;
             battery = g_battery;
@@ -163,7 +172,7 @@ void periodic_tx(std::uint32_t tick, std::int64_t now_ms)
         if (transmit<proto::ControllerCommand>(app::protect(cmd, g_command_counter)) == 0) {
             ++g_tx_command;
         }
-        Locked l(shared().lock);
+        const Locked l(shared().lock);
         g_last_command = cmd;
     }
     if (tick % kTicksPer100ms == kHeartbeatSlot) {
@@ -175,7 +184,7 @@ void periodic_tx(std::uint32_t tick, std::int64_t now_ms)
 
 ecu::NodeInputs inputs(std::int64_t /*now_ms*/)
 {
-    Locked l(shared().lock);
+    const Locked l(shared().lock);
     ecu::NodeInputs in;
     const auto& m = shared().monitor;
     in.critical_inputs_alive = m.alive(proto::SensorData::kId) && m.alive(proto::SensorHeartbeat::kId);
@@ -193,7 +202,7 @@ ecu::NodeInputs inputs(std::int64_t /*now_ms*/)
 
 void on_message_lost(std::uint32_t id)
 {
-    Locked l(shared().lock);
+    const Locked l(shared().lock);
     if (id == proto::SensorData::kId) {
         g_sensor_rx.reset_sequence();
     } else if (id == proto::BatteryStatus::kId) {
@@ -212,7 +221,7 @@ void on_node_state(proto::NodeState state)
 
 void reset_stats()
 {
-    Locked l(shared().lock);
+    const Locked l(shared().lock);
     g_sensor_rx.reset_stats();
     g_battery_rx.reset_stats();
     g_heartbeat_rx.reset_stats();
@@ -246,7 +255,7 @@ void fill_status(ecu_status& out, std::int64_t now_ms)
     std::uint16_t sensor_speed = 0;
     std::uint8_t soc = 0;
     {
-        Locked l(shared().lock);
+        const Locked l(shared().lock);
         out.rx_count = 3;
         fill_rx(out.rx[0], proto::SensorData::kName, g_sensor_rx.stats(), proto::SensorData::kId, now_ms);
         fill_rx(out.rx[1], proto::SensorHeartbeat::kName, g_heartbeat_rx.stats(), proto::SensorHeartbeat::kId,
@@ -258,8 +267,9 @@ void fill_status(ecu_status& out, std::int64_t now_ms)
         sensor_speed = g_sensor.speed;
         soc = g_battery.state_of_charge;
     }
-    std::snprintf(out.role_detail, sizeof(out.role_detail),
-                  "tx command=%u heartbeat=%u cmd: mode=%s torque_0.01Nm=%d steering_0.01deg=%d "
+    // A diagnostic line: truncation to the buffer is acceptable, hence the discarded length.
+    (void)std::snprintf(out.role_detail, sizeof(out.role_detail),
+                        "tx command=%u heartbeat=%u cmd: mode=%s torque_0.01Nm=%d steering_0.01deg=%d "
                   "speed_limit_0.1m_s=%u enabled=%u brake=%u | sensor speed_cm_s=%u soc_0.5pct=%u",
                   static_cast<unsigned>(tx_command), static_cast<unsigned>(tx_heartbeat),
                   proto::to_string(cmd.mode), static_cast<int>(cmd.torque_cmd), static_cast<int>(cmd.steering_cmd),

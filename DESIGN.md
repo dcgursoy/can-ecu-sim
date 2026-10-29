@@ -382,7 +382,7 @@ build to the same job.
 | 3 | fault gateway and HAL error hook | each fault type demonstrated and mapped to real-bus behaviour in `docs/` |
 | 4 | logger, live decoder, analysis | bus load, period/jitter and echo RTT percentiles reported from a recorded run |
 | 5 | pytest suite, unit tests of the protocol and state-machine code with coverage, firmware coverage under the suite (built as planned except that the kernel-dependent code is covered by instrumented `native_sim` builds under the suite instead of a `ztest` application, section 14.7) | the seven test groups pass and print measured values; coverage reported (the protocol library's host tests are Phase 1) |
-| 6 | CI complete | both targets built, all tests run, clang-tidy/cppcheck clean, artifacts uploaded |
+| 6 | CI complete (section 15) | both targets built, all tests run, clang-tidy/cppcheck clean, artifacts uploaded |
 | 7 | Rust sensor ECU | passes the unchanged pytest suite against the C++ controller; `no_std` crate cross-compiles |
 | 8 | README, DESIGN, RESULTS | every number in the README traceable to a command and a raw log |
 
@@ -1407,3 +1407,157 @@ From `tools/run-system-tests.sh --coverage` on 2026-10-29 (94 s, seed 1, 23 of 2
 - **Skip is a verdict.** An inconclusive run on a loaded desktop is neither a
   pass nor a firmware failure; recording it as a skip with the stall and the
   failed checks in the reason keeps the report honest and the retry visible.
+
+## 15. Phase 6: continuous integration
+
+### 15.1 One job, in the order a developer would run it
+
+`.github/workflows/ci.yml` is one job on `ubuntu-24.04` that builds the dev
+image (layer-cached, pushed to GHCR on `main`) and then runs every step inside
+it through `tools/dev.sh`, exactly as on a developer's machine: the generated
+code against the DBC, the Python unit suites and the C++ unit tests with
+coverage, the four firmware images (both roles for `native_sim` and
+`nucleo_f446re`), the allocator check on all four, the static analysis, and
+then the `vcan` steps in increasing scope: smoke test, the three Phase 2
+demos, the fault scenarios, the recorded run with the host tools, and the
+system test suite on the instrumented builds. One job rather than a matrix
+because every step after the image build takes seconds to two minutes and
+shares the same container; the whole run is a matter of minutes, most of it
+the image push and the firmware builds (`docs/phase-logs/phase6.md` has the
+step timings). A push that supersedes a running
+build cancels it (`concurrency`), the runner's `vcan` module is the first
+check so a kernel without it fails in seconds, and every artifact is uploaded
+with `if: always()`, so a failed run still ships its evidence.
+
+### 15.2 Static analysis: clang-tidy and cppcheck, every finding an error
+
+**What is analysed and how.** clang-tidy needs a compile database, and the one
+a Zephyr build writes is for gcc: `-m32`, `-imacros autoconf.h`, Zephyr's
+include paths and a handful of gcc-only options (`-fno-defer-pop`,
+`--param=min-pagesize=0`, `-fno-reorder-functions`) that clang rejects.
+`tools/static_analysis_db.py` reduces the databases of the sensor build, the
+controller build and the host unit-test build to the translation units under
+`firmware/`, drops the options clang cannot parse and keeps everything that
+decides what the code means, so the analysis sees the same preprocessed code
+the firmware compiler saw, in both roles (the common files are analysed once
+per role). The library headers are analysed through the units that include
+them, application and unit tests alike (`HeaderFilterRegex`). cppcheck
+covers the library headers through their unit tests, in project mode from the
+host build's database, and not the application: its own preprocessor cannot
+expand Zephyr's `IS_ENABLED()` (the comma-pasting trick of
+`sys/util_internal.h`; cppcheck 2.13 reports "wrong number of parameters for
+macro 'Z_IS_ENABLED2'") and skips every unit it fails on, which a planted
+finding in `ecu.cpp` confirmed by going unreported. Feeding it the units as
+the real compiler preprocesses them was tried next and rejected on evidence:
+the findings came back on the wrong lines (the module's log-level assignment,
+line 8, reported at line 23; macro internals attributed to unrelated
+statements) because cppcheck mis-tracks the compiler's line markers, and
+GoogleTest's expanded code was a hard parse error. A tool whose locations
+cannot be trusted is not actionable, so cppcheck keeps the scope where it
+parses correctly, which is also where its strengths (value flow through the
+constexpr state machines and codec) apply; the application, which clang
+parses in full, is clang-tidy's alone. `tools/static-analysis.sh` runs both;
+CI runs it after the builds and uploads the logs.
+
+**The rules.** `.clang-tidy` enables the `bugprone`, `cert`, `clang-analyzer`,
+`concurrency`, `cppcoreguidelines`, `misc`, `modernize`, `performance`,
+`portability` and `readability` groups and makes every finding an error
+(`WarningsAsErrors: '*'`): a finding is fixed or carries an inline `NOLINT`
+with its reason, and the file lists each disabled check with its reason. The
+disabled ones fall into three kinds. Checks whose point is not this project's:
+magic numbers (protocol constants and timing numbers are the content), auto
+instead of explicit integer widths, trailing return types, identifier length.
+Checks that contradict the firmware's deliberate design: non-const globals
+(`K_THREAD_DEFINE`, the statically allocated shared state), printf-style
+logging, C arrays and unions at the Zephyr API boundary (`can_frame`). And
+checks that fire inside Zephyr's macro expansions at every log call: `LOG_*`
+expands to a `do { } while (0)` with C casts and a level test that
+`readability-simplify-boolean-expr` wants to rewrite, `LOG_MODULE_REGISTER`
+to file-scope statics, and `kernel.h` pulls in a header cycle of its own. The
+first run established that the sources themselves have none of these
+constructs, so the checks are off rather than suppressed at 31
+log calls. The unit-test directories inherit the configuration and switch off
+what GoogleTest's `TEST()` macro needs (a global registration object, `goto`
+in `ASSERT_*`).
+
+**What the first run found in the code** (341 findings across
+19 checks before the macro-expansion checks were disabled):
+
+- Two nested conditional operators, the clamp in `codec::to_raw`
+  (`codec_util.hpp`) and the controller's `clamp()`, rewritten as `if`
+  chains (`readability-avoid-nested-conditional-operator`).
+- The `Locked` spinlock guard declared a destructor and deleted copies but not
+  moves (`cppcoreguidelines-special-member-functions`): the moves are deleted
+  too. Its 46 uses are `const Locked l(...)` now, the same advice clang-tidy
+  gives for `std::lock_guard` (`misc-const-correctness`).
+- `ThreadId` was an `enum class : std::size_t` with three values
+  (`performance-enum-size`): `std::uint8_t`.
+- The three thread entry functions had unnamed parameters
+  (`readability-named-parameter`): named as the unused `p1..p3` Zephyr passes.
+- Both roles discarded `snprintf`'s length when formatting the status line
+  (`cert-err33-c`): acknowledged with a cast and a comment, truncation of a
+  diagnostic line being acceptable.
+- The generated test-vector structs left their arrays uninitialised
+  (`cppcoreguidelines-pro-type-member-init`): the generator
+  (`can/gen_test_vectors.py`) emits default member initialisers, the header
+  was regenerated and the `--check` in CI keeps them in step.
+- A `reinterpret_cast` from `const char*` in the CRC test
+  (`cppcoreguidelines-pro-type-reinterpret-cast`): a byte vector instead.
+- Five locals in the tests that could be `const` (`misc-const-correctness`).
+
+**What is suppressed inline, each with its reason:** `TimeoutMonitor::tick()` takes its callback as a
+forwarding reference and calls it once per lost entry without
+`std::forward` (`cppcoreguidelines-missing-std-forward`; forwarding would move
+from it inside the loop); five test lines cast an out-of-table value to an
+enum on purpose, to reach the `"UNKNOWN"` branch of `to_string`
+(`clang-analyzer-optin.core.EnumCastOutOfRange`); and the shell command table
+in `shell_cmds.c` is wrapped in a `NOLINTBEGIN(bugprone-branch-clone)`, the
+identical branches being inside Zephyr's `SHELL_CMD` expansion.
+
+**cppcheck** runs with `--enable=warning,style,performance,portability`,
+`--error-exitcode=1` and inline suppressions. One check is off with its
+reason: `useStlAlgorithm` asks for `std::find_if`, `std::all_of` and
+`std::fill` in place of the loops of the constexpr libraries, and C++17's
+algorithms are not constexpr. Over the ten units of the library tests (every header of `protocol` and `ecu_core` included) it is clean.
+
+### 15.3 Reports and artifacts
+
+Every suite writes a JUnit report: pytest for the unit suites
+(`build/test-results/unit-tests.xml`) and the system suite
+(`system-tests.xml`, with every measured value as a test property), CTest for
+the C++ tests (`build/host-tests/host-tests.xml`). Coverage comes as text,
+HTML and Cobertura XML for the library headers (`host-tests`) and for the
+firmware under the system suite (`test-results/firmware-coverage.*`). The
+artifacts: `firmware-builds` (the four images and their `.config`),
+`host-tests` (JUnit and coverage), `static-analysis` (the clang-tidy log, the
+cppcheck XML and text), `network-logs` (the Phase 2 to 4 demos' captures,
+console logs and verdicts), `test-results` (everything the system suite
+leaves: JUnit, `measurements.json` and `.md`, the logs of every module, the
+firmware coverage). `tools/ci-summary.py` turns the same files into the run's
+job summary: the test counts of every suite, both coverage figures, the
+static-analysis verdict and the suite's measured values, so the numbers are
+on the run page without opening an artifact. Dependabot keeps the actions at
+their current majors' latest releases, and the README carries the badge.
+
+### 15.4 What Phase 6 taught
+
+- **Triage by origin before counting.** 341 findings looked like a lot; three
+  quarters of them were one Zephyr macro (`LOG_*`) seen through four checks at
+  31 call sites, and none of those constructs exist in the sources. Grouping
+  the first run by check and by file turned a wall of errors into eight real
+  fixes and three suppressions.
+- **The configuration is documentation.** A disabled check without a reason
+  is a hidden decision; `.clang-tidy` lists each one with its reason and the
+  inline suppressions carry theirs, so a reviewer can disagree with a line
+  rather than with a list.
+- **Generated code is code.** The test-vector header was fixed in its
+  generator, not by hand; the `--check` step keeps it that way.
+- **Feed the analysers the compiler's view.** A filtered copy of the real
+  compile database (both roles, the host tests) is what makes clang-tidy's
+  verdict about the firmware rather than about a guess at its defines;
+  cppcheck needs `autoconf.h` force-included because it ignores `-imacros`,
+  and its file filter does not cross directories.
+- **Every finding an error, from the first green run.** With
+  `WarningsAsErrors: '*'` and `--error-exitcode=1` the analysis cannot drift:
+  a new finding is a failed build, and the choice between fixing it and
+  suppressing it with a reason is made in the pull request that introduced it.

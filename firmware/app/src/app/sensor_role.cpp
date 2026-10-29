@@ -73,7 +73,7 @@ bool handle_frame(const can_frame& frame, std::int64_t now_ms)
     case proto::ControllerCommand::kId: {
         proto::ControllerCommand cmd{};
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             result = g_command_rx.receive(frame.data, frame.dlc, cmd);
             if (ecu::accepted(result)) {
                 shared().monitor.note_received(frame.id, now_ms);
@@ -87,7 +87,7 @@ bool handle_frame(const can_frame& frame, std::int64_t now_ms)
     case proto::ControllerHeartbeat::kId: {
         proto::ControllerHeartbeat hb{};
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             result = g_heartbeat_rx.receive(frame.data, frame.dlc, hb);
             if (ecu::accepted(result)) {
                 shared().monitor.note_received(frame.id, now_ms);
@@ -137,7 +137,7 @@ void periodic_tx(std::uint32_t tick, std::int64_t now_ms)
 
 ecu::NodeInputs inputs(std::int64_t /*now_ms*/)
 {
-    Locked l(shared().lock);
+    const Locked l(shared().lock);
     ecu::NodeInputs in;
     const auto& m = shared().monitor;
     in.critical_inputs_alive = m.all_alive();
@@ -151,7 +151,7 @@ ecu::NodeInputs inputs(std::int64_t /*now_ms*/)
 
 void on_message_lost(std::uint32_t id)
 {
-    Locked l(shared().lock);
+    const Locked l(shared().lock);
     if (id == proto::ControllerCommand::kId) {
         g_command_rx.reset_sequence();
     } else if (id == proto::ControllerHeartbeat::kId) {
@@ -163,7 +163,7 @@ void on_node_state(proto::NodeState /*state*/) {}
 
 void reset_stats()
 {
-    Locked l(shared().lock);
+    const Locked l(shared().lock);
     g_command_rx.reset_stats();
     g_heartbeat_rx.reset_stats();
 }
@@ -195,7 +195,7 @@ void fill_status(ecu_status& out, std::int64_t now_ms)
     proto::ControllerCommand cmd{};
     bool have_command = false;
     {
-        Locked l(shared().lock);
+        const Locked l(shared().lock);
         out.rx_count = 2;
         fill_rx(out.rx[0], proto::ControllerCommand::kName, g_command_rx.stats(), proto::ControllerCommand::kId,
                 now_ms);
@@ -204,8 +204,9 @@ void fill_status(ecu_status& out, std::int64_t now_ms)
         cmd = g_last_command;
         have_command = g_have_command;
     }
-    std::snprintf(out.role_detail, sizeof(out.role_detail),
-                  "tx data=%u battery=%u heartbeat=%u speed_cm_s=%d yaw_0.1deg_s=%d soc_0.5pct=%u "
+    // A diagnostic line: truncation to the buffer is acceptable, hence the discarded length.
+    (void)std::snprintf(out.role_detail, sizeof(out.role_detail),
+                        "tx data=%u battery=%u heartbeat=%u speed_cm_s=%d yaw_0.1deg_s=%d soc_0.5pct=%u "
                   "cmd: have=%d mode=%s torque_0.01Nm=%d enabled=%u",
                   static_cast<unsigned>(g_tx_data), static_cast<unsigned>(g_tx_battery),
                   static_cast<unsigned>(g_tx_heartbeat), static_cast<int>(g_model.speed_mps * 100.0F),

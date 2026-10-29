@@ -6,7 +6,7 @@ namespace {
 
 TEST(Liveness, NothingIsAliveBeforeTheFirstCheckIn)
 {
-    ecu::Liveness<3> l(200);
+    const ecu::Liveness<3> l(200);
     EXPECT_EQ(l.stale_mask(0), 0x7U);
     EXPECT_FALSE(l.all_alive(0));
     EXPECT_EQ(l.window_ms(), 200U);
@@ -29,7 +29,7 @@ TEST(Liveness, StaleThreadsShowUpInTheMask)
 
 TEST(Liveness, WindowFromARuntimeValue)
 {
-    volatile std::uint32_t window = 300;
+    const volatile std::uint32_t window = 300;
     ecu::Liveness<3> l(window);
     EXPECT_EQ(l.window_ms(), 300U);
     EXPECT_EQ(l.stale_mask(0), 0x7U);

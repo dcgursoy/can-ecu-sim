@@ -67,7 +67,7 @@ TEST(CanErrorStateMachine, RepeatedFailuresDoubleTheBackoffAndEventuallyLatchFai
     std::int64_t t = 0;
     const std::uint32_t expected_backoff[] = {100, 200, 400, 800};
     sm.on_controller_state(CanState::kBusOff, t);
-    for (std::uint32_t backoff : expected_backoff) {
+    for (const std::uint32_t backoff : expected_backoff) {
         EXPECT_EQ(sm.current_backoff_ms(), backoff);
         t += backoff;
         EXPECT_EQ(sm.tick(t - 1), Action::kNone);
@@ -243,7 +243,7 @@ TEST(CanErrorStateMachine, BackoffIsCappedAtMaxBackoffMs)
     std::int64_t t = 0;
     const std::uint32_t expected_backoff[] = {100, 200, 400, 500, 500, 500};
     sm.on_controller_state(CanState::kBusOff, t);
-    for (std::uint32_t backoff : expected_backoff) {
+    for (const std::uint32_t backoff : expected_backoff) {
         EXPECT_EQ(sm.current_backoff_ms(), backoff);
         t += backoff;
         EXPECT_EQ(sm.tick(t - 1), Action::kNone);
@@ -324,7 +324,7 @@ TEST(CanErrorStateMachine, TickWhilePassiveOrNotYetStableDoesNothing)
 // target without constant initialisation the constructor runs at boot).
 TEST(CanErrorStateMachine, PolicyFromRuntimeValues)
 {
-    volatile std::uint32_t initial = 250;
+    const volatile std::uint32_t initial = 250;
     const BusOffPolicy policy{initial, 1000, 50, 2, 1000};
     CanErrorStateMachine sm(policy);
     EXPECT_EQ(sm.policy().initial_backoff_ms, 250U);
@@ -351,7 +351,7 @@ TEST(CanErrorStateMachine, PhaseNamesAndStoppedIsIgnored)
     EXPECT_STREQ(CanErrorStateMachine::to_string(Phase::kBusOffBackoff), "bus_off_backoff");
     EXPECT_STREQ(CanErrorStateMachine::to_string(Phase::kBusOffRecovering), "bus_off_recovering");
     EXPECT_STREQ(CanErrorStateMachine::to_string(Phase::kFailed), "failed");
-    EXPECT_STREQ(CanErrorStateMachine::to_string(static_cast<Phase>(42)), "unknown");
+    EXPECT_STREQ(CanErrorStateMachine::to_string(static_cast<Phase>(42)), "unknown");  // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): the out-of-table value is the point
 }
 
 }  // namespace

@@ -15,7 +15,8 @@ using proto::crc8::compute;
 
 std::uint8_t crc_of_string(const char* text)
 {
-    return compute(reinterpret_cast<const std::uint8_t*>(text), std::strlen(text));
+    const std::vector<std::uint8_t> bytes(text, text + std::strlen(text));
+    return compute(bytes.data(), bytes.size());
 }
 
 TEST(Crc8, CheckValue)

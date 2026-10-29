@@ -133,7 +133,7 @@ TEST(E2e, CounterStatusNames)
     EXPECT_STREQ(proto::e2e::to_string(CounterStatus::kRepeated), "repeated");
     EXPECT_STREQ(proto::e2e::to_string(CounterStatus::kSkipped), "skipped");
     EXPECT_STREQ(proto::e2e::to_string(CounterStatus::kOutOfSequence), "out_of_sequence");
-    EXPECT_STREQ(proto::e2e::to_string(static_cast<CounterStatus>(9)), "unknown");
+    EXPECT_STREQ(proto::e2e::to_string(static_cast<CounterStatus>(9)), "unknown");  // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): the out-of-table value is the point
 }
 
 TEST(E2e, WorksAtCompileTime)

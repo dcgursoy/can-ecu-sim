@@ -217,7 +217,7 @@ TEST(Messages, EnumToString)
 TEST(Messages, OutOfTableEnumValuesAreKept)
 {
     proto::SensorData m{};
-    m.sensor_status = static_cast<proto::SensorStatus>(13);
+    m.sensor_status = static_cast<proto::SensorStatus>(13);  // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): the out-of-table value is the point
     const auto back = proto::SensorData::from_frame(m.to_frame());
     EXPECT_EQ(static_cast<unsigned>(back.sensor_status), 13U);
     EXPECT_STREQ(proto::to_string(back.sensor_status), "UNKNOWN");
@@ -225,7 +225,7 @@ TEST(Messages, OutOfTableEnumValuesAreKept)
 
 TEST(Messages, EveryEnumNamesAnOutOfTableValue)
 {
-    EXPECT_STREQ(proto::to_string(static_cast<proto::CanState>(7)), "UNKNOWN");
+    EXPECT_STREQ(proto::to_string(static_cast<proto::CanState>(7)), "UNKNOWN");  // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): the out-of-table value is the point
     EXPECT_STREQ(proto::to_string(static_cast<proto::NodeState>(7)), "UNKNOWN");
     EXPECT_STREQ(proto::to_string(static_cast<proto::ControllerMode>(7)), "UNKNOWN");
     EXPECT_STREQ(proto::to_string(static_cast<proto::SensorStatus>(7)), "UNKNOWN");

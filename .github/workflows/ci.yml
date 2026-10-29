@@ -10,6 +10,11 @@ permissions:
   contents: read
   packages: write
 
+# A push that supersedes a running build cancels it; pull requests likewise.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # The checkout on GitHub runners is owned by uid 1001; run as root inside the
   # container so builds can write to the bind-mounted workspace.
@@ -91,7 +96,7 @@ jobs:
         run: tools/dev.sh tools/gen-all.sh --check
 
       - name: Python unit tests, reference implementation, gateway fault engine, host tools
-        run: tools/dev.sh python3 -m pytest -q can/ gateway/ host/
+        run: tools/dev.sh python3 -m pytest -q can/ gateway/ host/ --junitxml=build/test-results/unit-tests.xml
 
       - name: Host unit tests with coverage (protocol + ecu_core libraries)
         run: tools/dev.sh tools/run-host-tests.sh build/host-tests
@@ -111,6 +116,12 @@ jobs:
           for d in native_sim_sensor native_sim_controller nucleo_f446re_sensor nucleo_f446re_controller; do
             tools/dev.sh tools/check-no-heap.sh "build/$d"
           done
+
+      # clang-tidy and cppcheck over the application sources as both native_sim
+      # builds compile them and over the library headers through the host unit
+      # tests; every finding is an error (.clang-tidy, tools/static-analysis.sh).
+      - name: Static analysis, clang-tidy and cppcheck, every finding an error
+        run: tools/dev.sh tools/static-analysis.sh
 
       - name: Smoke test, candump sees protected frames on vcan0
         run: tools/dev.sh tools/smoke-test.sh build/native_sim_sensor/zephyr/zephyr.exe
@@ -153,12 +164,22 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
 
-      - name: Upload host test coverage
+      - name: Upload host unit test report and coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: host-test-coverage
-          path: build/host-tests/coverage*
+          name: host-tests
+          path: |
+            build/host-tests/coverage*
+            build/host-tests/host-tests.xml
+          if-no-files-found: warn
+
+      - name: Upload static analysis reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis
+          path: build/static-analysis/
           if-no-files-found: warn
 
       - name: Upload network logs
@@ -169,10 +190,16 @@ jobs:
           path: build/network-logs/
           if-no-files-found: warn
 
-      - name: Upload system test results (JUnit, measurements, logs, firmware coverage)
+      - name: Upload test results (JUnit of every suite, measurements, logs, firmware coverage)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: system-tests
+          name: test-results
           path: build/test-results/
           if-no-files-found: warn
+
+      # The run page gets the numbers: test counts of every suite, the coverage
+      # figures, the static-analysis verdict and the suite's measured values.
+      - name: Job summary
+        if: always()
+        run: tools/ci-summary.py >> "$GITHUB_STEP_SUMMARY"

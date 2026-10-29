@@ -105,7 +105,7 @@ TEST(ProtectedReceiver, ResultNames)
     EXPECT_STREQ(ecu::to_string(ecu::RxResult::kRejectedCrc), "rejected_crc");
     EXPECT_STREQ(ecu::to_string(ecu::RxResult::kRejectedRepeated), "rejected_repeated");
     EXPECT_STREQ(ecu::to_string(ecu::RxResult::kRejectedOutOfSequence), "rejected_out_of_sequence");
-    EXPECT_STREQ(ecu::to_string(static_cast<ecu::RxResult>(99)), "unknown");
+    EXPECT_STREQ(ecu::to_string(static_cast<ecu::RxResult>(99)), "unknown");  // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): the out-of-table value is the point
 }
 
 }  // namespace

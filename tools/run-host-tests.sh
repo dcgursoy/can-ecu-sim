@@ -4,17 +4,18 @@
 #
 #   tools/run-host-tests.sh [build-dir]
 #
-# Produces <build-dir>/coverage.txt, coverage.html (with per-line details) and
-# coverage.xml (Cobertura, for CI), and prints the gcovr summary. Runs inside
-# the dev container (GoogleTest, gcovr).
+# Produces <build-dir>/coverage.txt, coverage.html (with per-line details),
+# coverage.xml (Cobertura, for CI) and host-tests.xml (JUnit), and prints the
+# gcovr summary. Runs inside the dev container (GoogleTest, gcovr).
 set -euo pipefail
 
 BUILD_DIR="${1:-build/host-tests}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# The compile database feeds tools/static-analysis.sh (clang-tidy, cppcheck).
 cmake -S firmware/lib -B "$BUILD_DIR" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Debug -DCAN_ECU_COVERAGE=ON
+    -DCMAKE_BUILD_TYPE=Debug -DCAN_ECU_COVERAGE=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 # Profile data left by a previous run of a since-recompiled test would be
 # rejected ("different checksum"); gtest_discover_tests runs the binary at
 # build time, so the cleanup has to happen before the build.
@@ -22,7 +23,8 @@ if [[ -d "$BUILD_DIR" ]]; then
     find "$BUILD_DIR" -name '*.gcda' -delete
 fi
 cmake --build "$BUILD_DIR"
-ctest --test-dir "$BUILD_DIR" --output-on-failure
+# The JUnit report of the run goes next to the coverage reports (CI uploads both).
+ctest --test-dir "$BUILD_DIR" --output-on-failure --output-junit "$REPO_ROOT/$BUILD_DIR/host-tests.xml"
 
 # Coverage of the library headers only (the tests and GoogleTest are excluded).
 # With -fkeep-inline-functions every translation unit emits its own copy of a

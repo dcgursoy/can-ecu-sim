@@ -1,0 +1,14 @@
+---
+# Unit tests: the firmware rules plus what GoogleTest's macros need.
+#   cppcoreguidelines-avoid-non-const-global-variables, cert-err58-cpp,
+#   cppcoreguidelines-owning-memory  TEST() registers a global object whose
+#                                    constructor may throw; that is the framework
+#   cppcoreguidelines-avoid-goto     GoogleTest's ASSERT_* expand to goto
+#   readability-function-size        a test is a scenario; length is content
+InheritParentConfig: true
+Checks: >
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cert-err58-cpp,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-avoid-goto,
+  -readability-function-size

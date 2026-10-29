@@ -23,7 +23,7 @@
 
 namespace app {
 
-enum class ThreadId : std::size_t { kRx = 0, kTx = 1, kSupervisor = 2, kCount = 3 };
+enum class ThreadId : std::uint8_t { kRx = 0, kTx = 1, kSupervisor = 2, kCount = 3 };
 constexpr std::size_t kThreadCount = static_cast<std::size_t>(ThreadId::kCount);
 
 /// Bits of the heartbeat's error_flags field (assignment documented in the DBC).
@@ -87,6 +87,8 @@ public:
     ~Locked() { k_spin_unlock(&lock_, key_); }
     Locked(const Locked&) = delete;
     Locked& operator=(const Locked&) = delete;
+    Locked(Locked&&) = delete;
+    Locked& operator=(Locked&&) = delete;
 
 private:
     k_spinlock& lock_;
@@ -175,7 +177,7 @@ Protected<Hb> make_heartbeat(TxCounter& counter, std::int64_t now)
 {
     Hb hb{};
     {
-        Locked l(shared().lock);
+        const Locked l(shared().lock);
         hb.node_state = shared().node.state();
         const std::uint32_t bus_off = shared().can_sm.counters().bus_off_events;
         hb.bus_off_count = static_cast<std::uint8_t>(bus_off > 63U ? 63U : bus_off);

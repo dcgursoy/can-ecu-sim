@@ -73,7 +73,7 @@ void maybe_stall(ThreadId id)
     const std::size_t idx = static_cast<std::size_t>(id);
     std::uint32_t ms = 0;
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         ms = g_shared.stall_ms[idx];
         g_shared.stall_ms[idx] = 0;
     }
@@ -110,12 +110,12 @@ void handle_echo(const can_frame& frame, std::uint32_t t_rx_cycles)
     const std::uint32_t turnaround_us = k_cyc_to_us_floor32(k_cycle_get_32() - t_rx_cycles);
     response.turnaround = static_cast<std::uint16_t>(turnaround_us > 65535U ? 65535U : turnaround_us);
     if (transmit<role::EchoResponse>(response.to_frame()) == 0) {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         ++g_shared.echo_responses;
     }
 }
 
-void rx_thread_fn(void*, void*, void*)
+void rx_thread_fn(void* /*p1*/, void* /*p2*/, void* /*p3*/)
 {
     can_frame frame{};
     for (;;) {
@@ -128,7 +128,7 @@ void rx_thread_fn(void*, void*, void*)
         const std::uint32_t t_rx_cycles = k_cycle_get_32();
         const std::int64_t now = now_ms();
         {
-            Locked l(g_shared.lock);
+            const Locked l(g_shared.lock);
             ++g_shared.rx_frames;
             const std::uint32_t queued = k_msgq_num_used_get(&g_rx_queue) + 1U;
             if (queued > g_shared.rx_queue_hwm) {
@@ -137,7 +137,7 @@ void rx_thread_fn(void*, void*, void*)
         }
         // Standard data frames only: no extended ids, remote frames or CAN FD.
         if ((frame.flags & (CAN_FRAME_IDE | CAN_FRAME_RTR | CAN_FRAME_FDF)) != 0U || frame.dlc > 8U) {
-            Locked l(g_shared.lock);
+            const Locked l(g_shared.lock);
             ++g_shared.rx_unknown;
             continue;
         }
@@ -149,13 +149,13 @@ void rx_thread_fn(void*, void*, void*)
             if (IS_ENABLED(CONFIG_APP_TEST_HOOKS)) {
                 test_control::handle(frame, now);
             } else {
-                Locked l(g_shared.lock);
+                const Locked l(g_shared.lock);
                 ++g_shared.rx_unknown;
             }
             break;
         default:
             if (!role::handle_frame(frame, now)) {
-                Locked l(g_shared.lock);
+                const Locked l(g_shared.lock);
                 ++g_shared.rx_unknown;
             }
             break;
@@ -164,7 +164,7 @@ void rx_thread_fn(void*, void*, void*)
 }
 
 // --- TX thread -----------------------------------------------------------------------
-void tx_thread_fn(void*, void*, void*)
+void tx_thread_fn(void* /*p1*/, void* /*p2*/, void* /*p3*/)
 {
     check_in(ThreadId::kTx);  // before the first tick, so the supervisor never sees a never-started thread
     k_timer_start(&g_tx_timer, K_MSEC(cfg::kBaseTickMs), K_MSEC(cfg::kBaseTickMs));
@@ -172,7 +172,7 @@ void tx_thread_fn(void*, void*, void*)
     for (;;) {
         const std::uint32_t expiries = k_timer_status_sync(&g_tx_timer);
         if (expiries > 1U) {
-            Locked l(g_shared.lock);
+            const Locked l(g_shared.lock);
             g_shared.tx_tick_overruns += expiries - 1U;
         }
         maybe_stall(ThreadId::kTx);
@@ -191,7 +191,7 @@ void process_can_events(std::int64_t now)
         ecu::CanErrorStateMachine::Phase after{};
         proto::CanState previous{};
         {
-            Locked l(g_shared.lock);
+            const Locked l(g_shared.lock);
             previous = g_shared.can_sm.controller_state();
             before = g_shared.can_sm.phase();
             g_shared.can_sm.on_controller_state(ev.state, ev.t_ms);
@@ -215,7 +215,7 @@ void process_can_events(std::int64_t now)
     proto::CanState previous{};
     bool changed = false;
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         previous = g_shared.can_sm.controller_state();
         before = g_shared.can_sm.phase();
         g_shared.can_sm.poll_controller_state(polled, now);
@@ -237,7 +237,7 @@ void run_bus_off_recovery(std::int64_t now)
     std::uint32_t attempt = 0;
     std::uint32_t backoff = 0;
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         backoff = g_shared.can_sm.current_backoff_ms();
         action = g_shared.can_sm.tick(now);
         attempt = g_shared.can_sm.counters().recovery_attempts;
@@ -248,7 +248,7 @@ void run_bus_off_recovery(std::int64_t now)
     const int err = g_can.recover();
     bool failed_now = false;
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         g_shared.can_sm.on_recovery_request_result(err == 0, now);
         failed_now = g_shared.can_sm.failed();
     }
@@ -264,7 +264,7 @@ void run_timeouts(std::int64_t now)
     std::array<ecu::MonitoredMessage, role::kMonitoredCount> lost{};
     std::size_t n = 0;
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         g_shared.monitor.tick(now, [&](const auto& entry) {
             if (n < lost.size()) {
                 lost[n++] = entry.cfg;
@@ -285,10 +285,10 @@ void run_node_state(std::int64_t now)
     const ecu::NodeInputs in = role::inputs(now);
     bool changed = false;
     proto::NodeState state{};
-    const char* reason = "";
+    const char* reason = nullptr;
     proto::NodeState before{};
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         before = g_shared.node.state();
         changed = g_shared.node.update(in, now);
         state = g_shared.node.state();
@@ -305,7 +305,7 @@ void run_watchdog(std::int64_t now)
     bool feed = false;
     std::uint32_t stale = 0;
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         stale = g_shared.liveness.stale_mask(now);
         g_shared.liveness_stale_mask = stale;
         feed = stale == 0U;
@@ -327,10 +327,10 @@ void run_watchdog(std::int64_t now)
     }
 }
 
-void supervisor_thread_fn(void*, void*, void*)
+void supervisor_thread_fn(void* /*p1*/, void* /*p2*/, void* /*p3*/)
 {
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         g_shared.monitor.start(now_ms());
         g_shared.node.start(now_ms());
     }
@@ -362,13 +362,13 @@ hal::Watchdog& watchdog() { return g_watchdog; }
 
 void check_in(ThreadId id)
 {
-    Locked l(g_shared.lock);
+    const Locked l(g_shared.lock);
     g_shared.liveness.check_in(static_cast<std::size_t>(id), now_ms());
 }
 
 void set_error_flag(ErrorFlag flag)
 {
-    Locked l(g_shared.lock);
+    const Locked l(g_shared.lock);
     g_shared.error_flags |= flag;
 }
 
@@ -395,7 +395,7 @@ std::uint8_t TxCounter::next(AppliedFaults& applied)
     bool skip = false;
 #ifdef CONFIG_APP_TEST_HOOKS
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         TxFaults& f = g_shared.tx_faults;
         if (f.freeze_counter_remaining != 0U) {
             --f.freeze_counter_remaining;
@@ -425,7 +425,7 @@ void corrupt_crc_if_requested(std::uint8_t& crc_byte, AppliedFaults& applied)
 #ifdef CONFIG_APP_TEST_HOOKS
     bool corrupt = false;
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         TxFaults& f = g_shared.tx_faults;
         if (f.corrupt_crc_remaining != 0U) {
             --f.corrupt_crc_remaining;
@@ -446,7 +446,7 @@ int transmit(std::uint32_t id, const std::uint8_t* data, std::size_t dlc, Applie
 {
     int err = 0;
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         if (!g_shared.can_sm.tx_allowed()) {
             err = -ENETDOWN;
         }
@@ -472,7 +472,7 @@ int transmit(std::uint32_t id, const std::uint8_t* data, std::size_t dlc, Applie
     }
     const bool sent = err == 0;
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         if (sent) {
             ++g_shared.tx_sent;
         }
@@ -548,7 +548,7 @@ extern "C" void ecu_status_get(struct ecu_status* out)
     out->test_hooks = IS_ENABLED(CONFIG_APP_TEST_HOOKS) ? 1 : 0;
     out->uptime_ms = now;
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         out->node_state = proto::to_string(g_shared.node.state());
         out->node_reason = g_shared.node.last_reason();
         out->node_state_age_ms = now - g_shared.node.entered_at_ms();
@@ -604,7 +604,7 @@ extern "C" void ecu_reset_faults(void)
     using namespace app;
     const std::int64_t now = now_ms();
     {
-        Locked l(g_shared.lock);
+        const Locked l(g_shared.lock);
         g_shared.can_sm.reset(now);
         g_shared.node.reset(now);
         g_shared.error_flags = 0;

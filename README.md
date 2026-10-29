@@ -1,5 +1,7 @@
 # can-ecu-sim
 
+[![ci](https://github.com/dcgursoy/can-ecu-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/dcgursoy/can-ecu-sim/actions/workflows/ci.yml)
+
 A simulated two-ECU CAN network on Zephyr RTOS, written in C++17, with a Python
 fault-injection gateway, host tooling, an automated pytest suite, CI that also
 builds the firmware for an STM32 Nucleo-F446RE, and (Phase 7) one ECU ported to
@@ -7,11 +9,11 @@ Rust as a cross-language conformance check. Pure software: the ECUs are Zephyr
 `native_sim` processes on a Linux virtual CAN bus (`vcan`) inside a Docker dev
 container, so the whole network runs identically on any machine and in CI.
 
-> Status: **Phase 5 of 8** (automated pytest suite, unit-test coverage). See
+> Status: **Phase 6 of 8** (CI complete: static analysis clean, every report an artifact). See
 > [DESIGN.md](DESIGN.md) for every design decision and the phase plan, and
 > [RESULTS.md](RESULTS.md) for the raw data behind every number below.
 
-## What is here after Phase 5
+## What is here after Phase 6
 
 - `can/network.dbc` the network: sensor data (10 ms), battery status (100 ms),
   controller command (20 ms), a heartbeat per ECU, an echo request/response
@@ -80,11 +82,25 @@ container, so the whole network runs identically on any machine and in CI.
   `measurements.md`, the logs of every module). `tools/run-system-tests.sh
   --coverage` runs the suite on gcov-instrumented firmware builds and reports
   the line coverage of the firmware under it.
-- `.github/workflows/ci.yml` builds the image, checks the generated code,
-  runs the Python and C++ unit tests with coverage, builds all four firmware
-  images, checks them for allocators, runs the smoke test, the three network
-  demos, the fault scenarios and the recorded run with the host tools on vcan,
-  and then the system test suite with firmware coverage, uploading its results.
+- `tools/static-analysis.sh` runs clang-tidy over the application sources as
+  both `native_sim` builds compile them (from the builds' compile database,
+  rewritten so clang accepts the gcc command lines) and over the library
+  headers through the host unit tests, and cppcheck over the library headers
+  and their tests (its preprocessor cannot expand Zephyr's `IS_ENABLED()`, so
+  the application is clang-tidy's alone). Every finding is an error
+  (`.clang-tidy` lists each disabled check with its reason; the inline
+  suppressions carry theirs).
+- `.github/workflows/ci.yml` builds the image, checks the generated code, runs
+  the Python and C++ unit tests with coverage, builds all four firmware images,
+  checks them for allocators, runs the static analysis, then on vcan the smoke
+  test, the three network demos, the fault scenarios, the recorded run with the
+  host tools and the system test suite on the instrumented builds. Every suite
+  writes a JUnit report; the artifacts are the firmware images, the C++ test
+  report and coverage, the static-analysis logs, the network logs and the
+  system suite's results with the firmware coverage, and a job summary puts
+  the test counts, both coverage figures, the static-analysis verdict and the
+  suite's measured values on the run page. Superseded runs are cancelled;
+  Dependabot keeps the actions current.
 
 ## Quick start
 
@@ -219,7 +235,15 @@ Windows/Linux only.
    with `tools/dev.sh tools/gen-all.sh`; CI fails if the committed copies are
    stale.
 
-7. **Run the system test suite** (about 94 s; the seven groups against
+7. **Run the static analysis** (clang-tidy and cppcheck over the firmware, a
+   few minutes; needs the `native_sim` builds and the host unit-test build,
+   which it makes if missing; reports in `build/static-analysis/`):
+
+   ```bash
+   tools/dev.sh tools/static-analysis.sh
+   ```
+
+8. **Run the system test suite** (about 94 s; the seven groups against
    both ECUs through the gateway, every measured value printed next to its
    verdict, results in `build/test-results/`):
 

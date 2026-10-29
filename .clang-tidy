@@ -1,0 +1,100 @@
+---
+# clang-tidy configuration for the firmware (tools/static-analysis.sh, CI).
+# Every enabled check is an error: a finding either gets fixed or gets an
+# inline NOLINT with its reason. DESIGN.md section 15 explains the choices.
+#
+# Disabled with a reason:
+#   bugprone-easily-swappable-parameters   (id, timeout_ms) style parameters are
+#                                          the protocol's vocabulary; the call
+#                                          sites are the generated tables
+#   cppcoreguidelines-avoid-magic-numbers,
+#   readability-magic-numbers              protocol constants, timing numbers and
+#                                          test vectors are the content here
+#   cppcoreguidelines-avoid-non-const-global-variables
+#                                          Zephyr's idiom: K_THREAD_DEFINE,
+#                                          K_MSGQ_DEFINE and the shared state are
+#                                          statically allocated globals by design
+#                                          (no heap after init)
+#   cppcoreguidelines-pro-type-vararg      LOG_*, shell_print and snprintf are
+#                                          printf-style by Zephyr's API
+#   cppcoreguidelines-pro-bounds-pointer-arithmetic,
+#   cppcoreguidelines-pro-bounds-constant-array-index
+#                                          frames are byte buffers indexed by
+#                                          DLC; the generated codec is checked
+#                                          against the reference implementation
+#   cppcoreguidelines-avoid-c-arrays,
+#   modernize-avoid-c-arrays               Zephyr's structs (can_frame::data) and
+#                                          C linkage interfaces
+#   cppcoreguidelines-macro-usage          Zephyr's API is macros
+#   modernize-use-trailing-return-type     style only
+#   modernize-use-nodiscard                would mark most of the library
+#   readability-identifier-length          t, id, n, e are the domain's names
+#   readability-function-cognitive-complexity
+#                                          the state machines' update functions
+#                                          are the complexity, split would hide it
+#   readability-use-anyofallof             std::any_of is not constexpr in C++17
+#                                          and the library is constexpr
+#   misc-include-cleaner                   needs include-what-you-use pragmas for
+#                                          Zephyr's umbrella headers
+#   cppcoreguidelines-avoid-do-while,
+#   cppcoreguidelines-pro-type-cstyle-cast,
+#   readability-simplify-boolean-expr      fire inside the expansion of Zephyr's
+#                                          LOG_* macros at every log call (and of
+#                                          GoogleTest's assertions); the sources
+#                                          themselves have no do/while, no C cast
+#                                          and no boolean expression to simplify,
+#                                          which the first run established
+#   cppcoreguidelines-pro-type-union-access,
+#   cppcoreguidelines-pro-bounds-array-to-pointer-decay
+#                                          Zephyr's can_frame carries its payload
+#                                          in a union of C arrays, handed to the
+#                                          codec's (pointer, length) interface
+#   misc-use-anonymous-namespace           LOG_MODULE_REGISTER expands to
+#                                          file-scope static variables
+#   misc-header-include-cycle              Zephyr's kernel.h / tracing/tracking.h
+#                                          cycle, reported through every unit
+#   modernize-use-auto                     explicit integer widths are the
+#                                          documentation in protocol code
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  cert-*,
+  clang-analyzer-*,
+  concurrency-*,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-type-union-access,
+  -cppcoreguidelines-pro-type-cstyle-cast,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-macro-usage,
+  misc-*,
+  -misc-include-cleaner,
+  -misc-use-anonymous-namespace,
+  -misc-header-include-cycle,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -modernize-use-auto,
+  -modernize-avoid-c-arrays,
+  performance-*,
+  portability-*,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -readability-simplify-boolean-expr,
+  -readability-use-anyofallof
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*/firmware/.*'
+FormatStyle: none
+CheckOptions:
+  misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic: true
+  readability-implicit-bool-conversion.AllowPointerConditions: true
+  readability-implicit-bool-conversion.AllowIntegerConditions: false

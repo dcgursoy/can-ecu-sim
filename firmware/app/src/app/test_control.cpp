@@ -28,7 +28,7 @@ void handle(const can_frame& frame, std::int64_t now_ms)
         return;
     }
     {
-        Locked l(shared().lock);
+        const Locked l(shared().lock);
         ++shared().test_commands;
         shared().error_flags |= kTestHookActive;
     }
@@ -54,35 +54,35 @@ void handle(const can_frame& frame, std::int64_t now_ms)
         break;
     case proto::TestCommand::kSuppressHeartbeat:
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             shared().tx_faults.suppress_heartbeat_until_ms = now_ms + tc.arg0;
         }
         LOG_INF("TEST_CONTROL SUPPRESS_HEARTBEAT for %u ms", tc.arg0);
         break;
     case proto::TestCommand::kCorruptCrc:
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             shared().tx_faults.corrupt_crc_remaining += arg0;
         }
         LOG_INF("TEST_CONTROL CORRUPT_CRC x%u", arg0);
         break;
     case proto::TestCommand::kSkipCounter:
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             shared().tx_faults.skip_counter_remaining += arg0;
         }
         LOG_INF("TEST_CONTROL SKIP_COUNTER x%u", arg0);
         break;
     case proto::TestCommand::kFreezeCounter:
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             shared().tx_faults.freeze_counter_remaining += arg0;
         }
         LOG_INF("TEST_CONTROL FREEZE_COUNTER x%u", arg0);
         break;
     case proto::TestCommand::kSuppressMessage:
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             shared().tx_faults.suppress_id = tc.arg0;
             shared().tx_faults.suppress_id_until_ms = now_ms + tc.arg1;
         }
@@ -94,7 +94,7 @@ void handle(const can_frame& frame, std::int64_t now_ms)
             break;
         }
         {
-            Locked l(shared().lock);
+            const Locked l(shared().lock);
             shared().stall_ms[tc.arg0] = tc.arg1;
         }
         LOG_INF("TEST_CONTROL STALL_THREAD %u for %u ms", tc.arg0, tc.arg1);

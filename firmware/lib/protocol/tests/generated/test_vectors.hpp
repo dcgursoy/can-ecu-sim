@@ -25,9 +25,9 @@ struct ControllerCommandIdx {
 };
 
 struct ControllerCommandVector {
-    proto::ControllerCommand::Frame bytes;        ///< encoded by cantools (raw values)
+    proto::ControllerCommand::Frame bytes{};      ///< encoded by cantools (raw values)
     proto::ControllerCommand expected;            ///< the raw values that were encoded
-    std::array<double, 9> phys;    ///< cantools' scaled decode of bytes
+    std::array<double, 9> phys{};  ///< cantools' scaled decode of bytes
 };
 
 inline const std::array<ControllerCommandVector, 32> kControllerCommand = {{
@@ -76,9 +76,9 @@ struct SensorDataIdx {
 };
 
 struct SensorDataVector {
-    proto::SensorData::Frame bytes;        ///< encoded by cantools (raw values)
+    proto::SensorData::Frame bytes{};      ///< encoded by cantools (raw values)
     proto::SensorData expected;            ///< the raw values that were encoded
-    std::array<double, 6> phys;    ///< cantools' scaled decode of bytes
+    std::array<double, 6> phys{};  ///< cantools' scaled decode of bytes
 };
 
 inline const std::array<SensorDataVector, 32> kSensorData = {{
@@ -130,9 +130,9 @@ struct BatteryStatusIdx {
 };
 
 struct BatteryStatusVector {
-    proto::BatteryStatus::Frame bytes;        ///< encoded by cantools (raw values)
+    proto::BatteryStatus::Frame bytes{};      ///< encoded by cantools (raw values)
     proto::BatteryStatus expected;            ///< the raw values that were encoded
-    std::array<double, 9> phys;    ///< cantools' scaled decode of bytes
+    std::array<double, 9> phys{};  ///< cantools' scaled decode of bytes
 };
 
 inline const std::array<BatteryStatusVector, 32> kBatteryStatus = {{
@@ -182,9 +182,9 @@ struct SensorHeartbeatIdx {
 };
 
 struct SensorHeartbeatVector {
-    proto::SensorHeartbeat::Frame bytes;        ///< encoded by cantools (raw values)
+    proto::SensorHeartbeat::Frame bytes{};      ///< encoded by cantools (raw values)
     proto::SensorHeartbeat expected;            ///< the raw values that were encoded
-    std::array<double, 7> phys;    ///< cantools' scaled decode of bytes
+    std::array<double, 7> phys{};  ///< cantools' scaled decode of bytes
 };
 
 inline const std::array<SensorHeartbeatVector, 32> kSensorHeartbeat = {{
@@ -234,9 +234,9 @@ struct ControllerHeartbeatIdx {
 };
 
 struct ControllerHeartbeatVector {
-    proto::ControllerHeartbeat::Frame bytes;        ///< encoded by cantools (raw values)
+    proto::ControllerHeartbeat::Frame bytes{};      ///< encoded by cantools (raw values)
     proto::ControllerHeartbeat expected;            ///< the raw values that were encoded
-    std::array<double, 7> phys;    ///< cantools' scaled decode of bytes
+    std::array<double, 7> phys{};  ///< cantools' scaled decode of bytes
 };
 
 inline const std::array<ControllerHeartbeatVector, 32> kControllerHeartbeat = {{
@@ -282,9 +282,9 @@ struct EchoRequestIdx {
 };
 
 struct EchoRequestVector {
-    proto::EchoRequest::Frame bytes;        ///< encoded by cantools (raw values)
+    proto::EchoRequest::Frame bytes{};      ///< encoded by cantools (raw values)
     proto::EchoRequest expected;            ///< the raw values that were encoded
-    std::array<double, 3> phys;    ///< cantools' scaled decode of bytes
+    std::array<double, 3> phys{};  ///< cantools' scaled decode of bytes
 };
 
 inline const std::array<EchoRequestVector, 32> kEchoRequest = {{
@@ -330,9 +330,9 @@ struct SensorEchoResponseIdx {
 };
 
 struct SensorEchoResponseVector {
-    proto::SensorEchoResponse::Frame bytes;        ///< encoded by cantools (raw values)
+    proto::SensorEchoResponse::Frame bytes{};      ///< encoded by cantools (raw values)
     proto::SensorEchoResponse expected;            ///< the raw values that were encoded
-    std::array<double, 3> phys;    ///< cantools' scaled decode of bytes
+    std::array<double, 3> phys{};  ///< cantools' scaled decode of bytes
 };
 
 inline const std::array<SensorEchoResponseVector, 32> kSensorEchoResponse = {{
@@ -378,9 +378,9 @@ struct ControllerEchoResponseIdx {
 };
 
 struct ControllerEchoResponseVector {
-    proto::ControllerEchoResponse::Frame bytes;        ///< encoded by cantools (raw values)
+    proto::ControllerEchoResponse::Frame bytes{};      ///< encoded by cantools (raw values)
     proto::ControllerEchoResponse expected;            ///< the raw values that were encoded
-    std::array<double, 3> phys;    ///< cantools' scaled decode of bytes
+    std::array<double, 3> phys{};  ///< cantools' scaled decode of bytes
 };
 
 inline const std::array<ControllerEchoResponseVector, 32> kControllerEchoResponse = {{
@@ -428,9 +428,9 @@ struct TestControlIdx {
 };
 
 struct TestControlVector {
-    proto::TestControl::Frame bytes;        ///< encoded by cantools (raw values)
+    proto::TestControl::Frame bytes{};      ///< encoded by cantools (raw values)
     proto::TestControl expected;            ///< the raw values that were encoded
-    std::array<double, 5> phys;    ///< cantools' scaled decode of bytes
+    std::array<double, 5> phys{};  ///< cantools' scaled decode of bytes
 };
 
 inline const std::array<TestControlVector, 32> kTestControl = {{
@@ -470,9 +470,9 @@ inline const std::array<TestControlVector, 32> kTestControl = {{
 
 /// Random (identifier, frame) pairs with the CRC computed by can/e2e_ref.py.
 struct CrcVector {
-    std::uint32_t id;
-    std::array<std::uint8_t, 8> bytes;
-    std::uint8_t crc;
+    std::uint32_t id{};
+    std::array<std::uint8_t, 8> bytes{};
+    std::uint8_t crc{};
 };
 
 inline constexpr std::array<CrcVector, 64> kCrc = {{
@@ -544,10 +544,10 @@ inline constexpr std::array<CrcVector, 64> kCrc = {{
 
 /// Plain frame (crc byte 0) + counter -> protected frame, per can/e2e_ref.py.
 struct E2eVector {
-    std::uint32_t id;
-    std::array<std::uint8_t, 8> plain;
-    std::uint8_t counter;
-    std::array<std::uint8_t, 8> protected_frame;
+    std::uint32_t id{};
+    std::array<std::uint8_t, 8> plain{};
+    std::uint8_t counter{};
+    std::array<std::uint8_t, 8> protected_frame{};
 };
 
 inline constexpr std::array<E2eVector, 20> kE2e = {{
@@ -577,8 +577,8 @@ inline constexpr std::array<E2eVector, 20> kE2e = {{
 /// signal carrying it (for to_string tests over the whole raw range).
 template <class E>
 struct EnumVector {
-    E value;
-    const char* label;
+    E value{};
+    const char* label{};
 };
 
 struct ControllerModeEnum {

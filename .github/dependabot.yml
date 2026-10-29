@@ -1,0 +1,9 @@
+# Keep the GitHub Actions the workflow uses at their current major versions'
+# latest releases (the pins in ci.yml are major versions; this opens a pull
+# request when one moves).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

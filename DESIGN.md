@@ -19,6 +19,12 @@ Contents
 9. [Phase plan and exit criteria](#9-phase-plan-and-exit-criteria)
 10. [Phase 1: network definition, protection scheme and generated codec](#10-phase-1-network-definition-protection-scheme-and-generated-codec)
 11. [Phase 2: the firmware](#11-phase-2-the-firmware)
+12. [Phase 3: fault injection](#12-phase-3-fault-injection)
+13. [Phase 4: host tooling](#13-phase-4-host-tooling)
+14. [Phase 5: the automated test suite](#14-phase-5-the-automated-test-suite)
+15. [Phase 6: continuous integration](#15-phase-6-continuous-integration)
+16. [Phase 7: the sensor ECU in Rust](#16-phase-7-the-sensor-ecu-in-rust)
+17. [Phase 8: documentation, traceability and what the project taught](#17-phase-8-documentation-traceability-and-what-the-project-taught)
 
 ---
 
@@ -47,14 +53,15 @@ that print measured numbers.
 
 ## 1. System architecture
 
-The target architecture at the end of Phase 8. Phase 0 delivers the dev
-container, one firmware process and the CI job.
+The architecture as built. Phase 0 delivered the dev container, one firmware
+process and the CI job; each later phase added one block (section 9), and
+the README's diagram shows the same network with the test suite drawn in.
 
 ```mermaid
 flowchart LR
     subgraph dc["Dev container (Linux, Docker, CAP_NET_ADMIN)"]
         direction LR
-        S["Sensor ECU<br/>Zephyr native_sim process<br/>C++17 (Rust port in Phase 7)"]
+        S["Sensor ECU<br/>Zephyr native_sim process, C++17<br/>or the Rust port (section 16)"]
         C["Controller ECU<br/>Zephyr native_sim process<br/>C++17"]
         V0(("vcan0"))
         V1(("vcan1"))
@@ -91,16 +98,17 @@ handling code shared and tested once.
 
 ## 2. Repository layout
 
-Target layout at Phase 8. After Phase 2 the repository contains `.devcontainer/`,
-`.github/`, `can/`, `firmware/`, `tools/` and `docs/`; the other directories
-appear with the phase that introduces them.
+The layout as built. `.devcontainer/`, `.github/`, `can/`, `firmware/`,
+`tools/` and `docs/` exist from Phase 2 on; `gateway/` came with Phase 3,
+`host/` with Phase 4, `tests/` with Phase 5 and `rust/` with Phase 7.
 
 ```
 can-ecu-sim/
 ├── .devcontainer/        Dockerfile + devcontainer.json: the single toolchain image
-├── .github/workflows/    CI (builds, unit tests, pytest on vcan, static analysis)
-├── can/                  network.dbc (the one source of truth), codec generator,
-│                         Python reference implementation of the protection scheme
+├── .github/workflows/    CI: one job, every build and test step in the dev container
+├── can/                  network.dbc (the one source of truth), the C++ and Rust codec
+│                         generators, the shared test vectors, the Python reference
+│                         implementation of the protection scheme
 ├── firmware/             Zephyr application (C++17)
 │   ├── west.yml          pins the Zephyr revision and the modules it needs
 │   ├── app/              Kconfig (role, timeouts, recovery policy), boards/ overlays
@@ -111,10 +119,12 @@ can-ecu-sim/
 │       └── ecu_core/     timeout monitor, protected RX policy, CAN error state
 │                         machine, node state machine, liveness, error-counter model
 ├── gateway/              Python fault-injection gateway between vcan0 and vcan1
-├── host/                 Python host tools: logger, live decoder, analysis
+├── host/                 Python host tools: logger, live decoder, echo probe, analysis
 ├── tests/                pytest suite that drives the whole network
-├── rust/                 no_std protocol crate + std adapter (sensor ECU port)
-├── tools/                dev-container wrappers, vcan setup, smoke test
+├── rust/                 sensor-core (no_std: codec, protection, state machines, the
+│                         sensor application) and sensor-vcan (the SocketCAN adapter)
+├── tools/                dev-container wrappers, vcan setup, build scripts, smoke test,
+│                         network demos, fault scenarios, test runners, static analysis
 │   └── wsl2/             builds/installs the vcan module for Docker Desktop on Windows
 ├── docs/                 fault model mapping, phase logs, toolchain versions
 ├── DESIGN.md             this file
@@ -369,21 +379,24 @@ retried by the same rules. Phase 4 adds the host tools' unit tests (on
 python-can's in-process virtual interface) to the pytest step and, last, the
 recorded run of the plain-bus network through the logger, the live decoder and
 the echo probe with the analysis of the recording (`tools/record_and_analyze.py`,
-section 13.5). Phase 5 adds the system test suite on the instrumented builds as the last `vcan` step, with its JUnit report, measurements, logs and firmware coverage uploaded as the `system-tests` artifact (section 14). Phase 6 adds the static analysis and the reports of section 15. Phase 7 adds the Rust gate (rustfmt, clippy, tests, release build, the `thumbv7em-none-eabihf` cross-compile) after the static analysis and, as the last `vcan` step, the suite's second run with the Rust sensor in the sensor's place, uploaded as `test-results-rust` (section 16).
+section 13.5). Phase 5 adds the system test suite on the instrumented builds as the last `vcan` step, with its JUnit report, measurements, logs and firmware coverage uploaded as the `system-tests` artifact (section 14). Phase 6 adds the static analysis and the reports of section 15. Phase 7 adds the Rust gate (rustfmt, clippy, tests, release build, the `thumbv7em-none-eabihf` cross-compile) after the static analysis and, as the last `vcan` step, the suite's second run with the Rust sensor in the sensor's place, uploaded as `test-results-rust` (section 16). The
+final job, 33 steps in about twelve minutes on a GitHub-hosted runner, is
+described step by step in section 15.1 and timed in
+`docs/phase-logs/phase7.md` section 5; section 17.5 lists every run.
 
 ## 9. Phase plan and exit criteria
 
-| Phase | Deliverable | Exit criterion |
-|---|---|---|
-| 0 | dev container, vcan tooling, minimal firmware, CI | `candump` shows the frame from a `native_sim` process; the same app builds for `nucleo_f446re`; CI green |
-| 1 | `can/network.dbc`, codec generator, host unit tests | every message round-trips through pack/unpack; counter and CRC8 verified against an independent reference |
-| 2 | full firmware, both roles | shell shows status; controller enters safe state on heartbeat loss; no heap after init proven |
-| 3 | fault gateway and HAL error hook | each fault type demonstrated and mapped to real-bus behaviour in `docs/` |
-| 4 | logger, live decoder, analysis | bus load, period/jitter and echo RTT percentiles reported from a recorded run |
-| 5 | pytest suite, unit tests of the protocol and state-machine code with coverage, firmware coverage under the suite (built as planned except that the kernel-dependent code is covered by instrumented `native_sim` builds under the suite instead of a `ztest` application, section 14.7) | the seven test groups pass and print measured values; coverage reported (the protocol library's host tests are Phase 1) |
-| 6 | CI complete (section 15) | both targets built, all tests run, clang-tidy/cppcheck clean, artifacts uploaded |
-| 7 | Rust sensor ECU (section 16) | passes the unchanged pytest suite against the C++ controller; `no_std` crate cross-compiles (met: 23 of 23 in section 16.5, `thumbv7em-none-eabihf` built in CI) |
-| 8 | README, DESIGN, RESULTS | every number in the README traceable to a command and a raw log |
+| Phase | Deliverable | Exit criterion | Where it is met |
+|---|---|---|---|
+| 0 | dev container, vcan tooling, minimal firmware, CI | `candump` shows the frame from a `native_sim` process; the same app builds for `nucleo_f446re`; CI green | `docs/phase-logs/phase0.md`; the smoke test and the Nucleo builds in every CI run |
+| 1 | `can/network.dbc`, codec generator, host unit tests | every message round-trips through pack/unpack; counter and CRC8 verified against an independent reference | section 10.4, `phase1.md` |
+| 2 | full firmware, both roles | shell shows status; controller enters safe state on heartbeat loss; no heap after init proven | section 11, `phase2.md`, RESULTS.md section 4 |
+| 3 | fault gateway and HAL error hook | each fault type demonstrated and mapped to real-bus behaviour in `docs/` | section 12.5, `docs/fault-model.md`, `phase3.md` |
+| 4 | logger, live decoder, analysis | bus load, period/jitter and echo RTT percentiles reported from a recorded run | section 13.6, RESULTS.md section 1 |
+| 5 | pytest suite, unit tests of the protocol and state-machine code with coverage, firmware coverage under the suite (built as planned except that the kernel-dependent code is covered by instrumented `native_sim` builds under the suite instead of a `ztest` application, section 14.7) | the seven test groups pass and print measured values; coverage reported (the protocol library's host tests are Phase 1) | section 14.8, RESULTS.md sections 2.1 to 2.3 |
+| 6 | CI complete (section 15) | both targets built, all tests run, clang-tidy/cppcheck clean, artifacts uploaded | section 15, `phase6.md` (CI run 40818484542) |
+| 7 | Rust sensor ECU (section 16) | passes the unchanged pytest suite against the C++ controller; `no_std` crate cross-compiles | sections 16.5 and 16.7, RESULTS.md section 3, CI run 40826567803 |
+| 8 | README, DESIGN, RESULTS | every number in the README traceable to a command and a raw log | section 17, RESULTS.md section 0 |
 
 ## 10. Phase 1: network definition, protection scheme and generated codec
 
@@ -1917,3 +1930,116 @@ supervisor tick and a 20 ms command period.
 - **Porting tests ports their mistakes too.** Two of the translated unit
   tests encoded a wrong expectation; the implementations were right. A
   failing ported test is a question about the test first.
+
+## 17. Phase 8: documentation, traceability and what the project taught
+
+### 17.1 What the last phase changed
+
+Phase 8 wrote nothing new into the network; it closed the loop between the
+numbers a reader sees first and the runs they come from. The README took its
+final form: the architecture diagram, a description of each part with a
+pointer into this document, the results table with one command and one
+raw-data link per row, the quick start and a documentation map.
+`RESULTS.md` gained a section 0 that names, for every row of that table, the
+run it comes from (command, date, commit) and the CI run that reproduced it,
+plus the runner's own measurements of both suite runs from the final CI
+run's artifacts, side by side with the local runs. This document gained its
+contents, the layout as built, the phase table with where each exit
+criterion is met, and this section. The checks behind the phase are in
+`docs/phase-logs/phase8.md`: every relative link and anchor in the three
+documents resolved by a script, every README number found verbatim in its
+source, the diagram rendered on GitHub.
+
+### 17.2 How a number is traced
+
+The rule since Phase 4 (section 13.6) is that no number is quoted without
+the command that produced it; Phase 8 adds the commit and the reproduction.
+The chain for a README row is: the row names a command; `RESULTS.md`
+section 0 names the run (date, commit) and the section holding its full
+output; that section holds the measurement log as the tool wrote it
+(`measurements.md`, the analysis block, the scenario verdicts); the CI run
+named beside it ran the same command on a GitHub-hosted runner, and its
+artifact is the runner's copy of the same log, reproduced in `RESULTS.md`
+for the two suite runs. Two kinds of number are kept apart throughout: the
+firmware's own clocks (timeouts, holds, backoffs, the watchdog), which the
+runner reproduces to the millisecond, and the host's (frame jitter, round
+trips, process start-up), which vary with the machine and are quoted with a
+second, busier run in parentheses. All of it was measured on a simulated bus
+on a desktop OS; section 0 of this document says what that does and does not
+show.
+
+### 17.3 What the whole project taught
+
+The lessons of each phase are at the end of its section; these are the ones
+that held across all eight.
+
+- **One source of truth, generated outward.** The DBC defines the network;
+  two codecs, the test vectors, the host tools and the Rust port are derived
+  from it, and a `--check` in CI keeps every generated file current. Nothing
+  about the bit layout was ever written twice by hand, which is why the C++
+  and Rust ECUs agreed on the first frame.
+- **Prove the protection scheme against something independent.** The CRC,
+  the counter policy and the codec were checked against a Python reference
+  and against cantools before the firmware existed; every captured frame in
+  every later run is still verified by that reference. The scheme's one
+  design measurement (Hamming distance 4 over the protected bits, section
+  10.2) decided the polynomial.
+- **Keep the testable part out of the kernel.** The libraries of
+  `firmware/lib` and the Rust `sensor-core` take time as an argument and do
+  no I/O; they carry the state machines, the acceptance policy, the error
+  handling, and have unit tests with fake clocks. What remains in the
+  kernel's hands (threads, queues, the HAL) is thin and is covered by the
+  system suite on instrumented builds.
+- **Judge from three sources.** Every scenario and every test reads the
+  ECUs' own counters, the gateway's counters and the frames captured with
+  kernel timestamps, and the three have to agree. A single source would have
+  hidden the fault-accounting defect of Phase 3, the counter-window
+  mistake of Phase 5 and the ordering race of Phase 7.
+- **A desktop process is not an ECU, so say so in the verdict.** A test
+  that fails while the bus log shows a scheduling stall is inconclusive and
+  retried, never silently passed and never silently failed. The policy cost
+  a few hundred lines and made the suite trustworthy on a shared runner.
+- **Every finding is an error, and every exclusion has a reason.** The
+  static analysis, the lint policy of the Rust crate and the review
+  workflows all work the same way: a new finding fails the build, and
+  switching a check off is a documented decision, not a convenience.
+- **Conformance is a test suite, not a diff.** The Rust port was judged by
+  the unchanged suite with the C++ controller opposite it, so "the same
+  behaviour" means the same reactions, counts and timings on the bus, not
+  the same code. The three divergences the review still found were in paths
+  the suite does not reach, which is the argument for keeping a review next
+  to a test suite rather than instead of it.
+- **Write the log before the summary.** Each phase's log records what
+  failed first, what the number was before the fix and what it was after;
+  the summaries in this document and the README were written from those
+  logs. The order matters: a summary written first tends to remember the
+  result and forget the detour, and the detours are where the learning was.
+
+### 17.4 Limits, and what is not done
+
+The bus is simulated: `vcan` has no bit rate, no arbitration and no error
+frames, so bus load is computed from frame sizes, error-passive and bus-off
+come from a modelled controller, and jitter measures the host (section 0,
+section 13.4). The Nucleo-F446RE images are built and checked for allocators
+in CI but have not run on a board in this project; the bxCAN and IWDG paths
+are compiled, reviewed and configured (section 11.2) but not exercised. The
+Rust port covers the sensor role; the controller is not ported, and the
+`no_std` crate is cross-compiled but not linked into a board image (section
+16.1). The gateway is a Python process, which bounds the flood rates and the
+relay latency it can produce (section 12.2). None of these is a gap in what
+was claimed; each is the next thing to do if the project continued.
+
+### 17.5 The CI runs
+
+| Commit | Phase | Run | Result | Duration |
+|---|---|---|---|---|
+| `6fdce90` | 0 to 3, pushed together when the repository was created | 40795735230 | failed in the allocator check (`grep -q` on a pipe under `pipefail`; fixed in Phase 4) | |
+| `a3b7467` | 4 | 40799295827 | passed, 25 steps | 6 min 10 s |
+| `fd9f17d` | 5 | 40813161893 | passed, 27 steps | 8 min 0 s |
+| `8d34d3e` | 6 | 40818484542 | passed, 30 steps | 14 min 9 s |
+| `8472b9b` | 7 | 40824884673 | failed in the C++ system suite (a floating-point comparison at a limit in the harness; fixed in `aa1c495`) | 11 min 10 s |
+| `aa1c495` | 7, harness fix | 40826567803 | passed, 33 steps | 12 min 12 s |
+
+The two failures were both in the tooling that judges the firmware, not in
+the firmware, and both were found by CI on a machine other than the one the
+code was written on; `RESULTS.md` section 0 links each run.

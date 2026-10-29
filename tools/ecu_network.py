@@ -58,7 +58,8 @@ import cantools
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 DBC = REPO / "can" / "network.dbc"
-LOG_LINE_RE = re.compile(r"^\((\d+\.\d+)\)\s+\S+\s+([0-9A-Fa-f]{3,8})#([0-9A-Fa-f]*)$")
+# candump -L lines; newer can-utils and python-can append a direction marker (" R" / " T").
+LOG_LINE_RE = re.compile(r"^\((\d+\.\d+)\)\s+\S+\s+([0-9A-Fa-f]{3,8})#([0-9A-Fa-f]*)(?:\s+[RT])?$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\[J|\r")
 PROMPT = "ecu:~$ "
 
@@ -535,14 +536,18 @@ class Tee:
         self._file.close()
 
 
+LOG_SUFFIXES = (".log", ".csv", ".json")   # what a run leaves in --log-dir and what gets published
+
+
 def publish_logs(log_dir: pathlib.Path, cmd: str, attempt: int) -> None:
     dest = REPO / "build" / "network-logs" / cmd
     if attempt == 1:
         shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True, exist_ok=True)
     suffix = "" if attempt == 1 else f".attempt{attempt}"
-    for p in log_dir.glob("*.log"):
-        shutil.copy(p, dest / (p.stem + suffix + p.suffix))
+    for p in sorted(log_dir.iterdir()):
+        if p.suffix in LOG_SUFFIXES:
+            shutil.copy(p, dest / (p.stem + suffix + p.suffix))
     print(f"logs copied to {dest}", file=sys.__stdout__)
 
 
@@ -559,8 +564,9 @@ def execute(args, cmd_name: str, fn) -> int:
     rc = EXIT_FAIL
     for attempt in range(1, args.retries + 2):
         log_dir.mkdir(parents=True, exist_ok=True)
-        for p in log_dir.glob("*.log"):
-            p.unlink()
+        for p in log_dir.iterdir():
+            if p.suffix in LOG_SUFFIXES:
+                p.unlink()
         tee = Tee(log_dir / "summary.log")
         sys.stdout = tee
         try:

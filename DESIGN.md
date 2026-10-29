@@ -364,8 +364,12 @@ reported inconclusive and repeated up to twice; a failure without a stall is a
 real failure. Phase 3 adds the gateway's fault-engine unit tests to the pytest
 step and, after the demos, the fifteen fault-injection scenarios on the
 two-segment topology (`tools/fault_scenarios.py`, section 12), judged and
-retried by the same rules. Later phases add the pytest suite, static analysis
-and the Rust build to the same job.
+retried by the same rules. Phase 4 adds the host tools' unit tests (on
+python-can's in-process virtual interface) to the pytest step and, last, the
+recorded run of the plain-bus network through the logger, the live decoder and
+the echo probe with the analysis of the recording (`tools/record_and_analyze.py`,
+section 13.5). Later phases add the pytest suite, static analysis and the Rust
+build to the same job.
 
 ## 9. Phase plan and exit criteria
 
@@ -991,3 +995,181 @@ on this host and nothing about an MCU. On hardware the acceptance filter would k
 software altogether; that the `native_sim` driver accepts every standard frame
 is listed in `docs/fault-model.md` as a difference, not hidden by the scenario.
 
+
+## 13. Phase 4: host tooling
+
+### 13.1 Three questions, three tools, one decoder
+
+A bench engineer asks three things of a bus: what is on it right now, what
+happened during a run, and how well does it keep time. `host/` answers them
+with a live decoder (`host.decoder`), a logger (`host.logger`) and an analysis
+of a recording (`host.analysis`), plus the probe that produces the round-trip
+samples the analysis needs (`host.echo`). They are built on python-can for the
+interface and the log formats and on cantools for the DBC, so they run
+unchanged against a real SocketCAN adapter; everything the ECUs know about the
+protection scheme comes from `can/e2e_ref.py`, so a frame is judged on the host
+by the same rules as in the firmware's receivers (DLC first, then the CRC, and
+the rolling counter only on CRC-valid frames, with the same four verdicts).
+
+The gateway uses raw sockets and the host tools use python-can, and the reason
+is the same in both cases: what sits on the critical path. The gateway's data
+path is a 16-byte `struct can_frame` and `select()`, and a Python object per
+frame would be measurable latency. The host tools are observers; what matters
+there is that the library already reads and writes five log formats, provides
+an in-process `virtual` interface that the unit tests run the logger and the
+probe against without `vcan`, and takes the kernel's `SO_TIMESTAMPNS` receive
+timestamp for every frame, so the timeline in a recording does not depend on
+when the logging process was scheduled (the same property the Phase 2 demos
+rely on to tell a host stall from a firmware fault).
+
+One `Decoder` class does the decoding, the protection verdict and the
+per-identifier statistics for all three consumers (stream, table, CSV), so it
+is tested once, offline, on frames with known answers.
+
+### 13.2 The logger: a raw record and a readable one
+
+`bus.log` is the candump log format written by python-can's
+`CanutilsLogWriter`: the raw truth, replayable with `canplayer`, verifiable by
+the independent `can/verify_candump.py` (which it was: 2038 frames, 0 faults),
+and readable by every tool in the project. `bus.csv` is the same frames decoded,
+one row per frame with the timestamp, identifier, name, DLC, raw bytes, the
+protection verdict (`protected`, `crc_ok`, `counter`, `counter_check`), the
+period since the previous frame of that identifier, and then one column per DBC
+signal named `MESSAGE.signal` in physical units with enumerations by name. The
+wide layout was chosen over a long (one row per signal) one because a
+spreadsheet or pandas user filters by `name` and reads across; the sparse
+columns cost nothing at this scale and the column set is defined by the DBC
+alone, so it never changes between runs.
+
+Two details of python-can had to be handled rather than used as found. Its
+direction flag comes from the kernel's `MSG_DONTROUTE`, which is set for every
+frame that originated on the local host, i.e. for all traffic on a `vcan`
+interface, so a naive logger would mark everything it received as transmitted;
+the logger forces the `R` marker, since it only receives. And the newer candump
+log format carries that direction marker at the end of each line, which the
+project's own readers from Phases 2 and 3 did not accept; their regular
+expressions now take an optional ` R`/` T`, and the Phase 2 demo was re-run on
+the new reader.
+
+### 13.3 The live decoder
+
+Two views of the same stream. `--mode stream` is a candump with meaning: one
+line per frame with the time since the previous frame of that identifier, the
+protection verdict and the decoded signals with units (`--every N` thins a
+100 Hz message, `--ids` filters). `--mode table` is a cansniffer with
+statistics: one row per identifier, redrawn twice a second on a terminal, with
+count, rate over the last second of bus time, mean/last/max period, the fault
+counters and the last decoded values. Both read a recorded log as well as a
+live interface, which is what makes the command line testable: the unit tests
+run it on a three-line log, with and without the direction marker.
+
+### 13.4 The analysis, and what each number means on a simulated bus
+
+**Bus load.** `vcan` has no bit rate, so the tool reports the load this traffic
+would impose on a CAN 2.0A bus at a chosen rate (500 kbit/s, the common
+powertrain rate, by default): per frame 47 + 8·DLC bits including the 3-bit
+interframe space, and with worst-case bit stuffing another ⌊(34 + 8·DLC − 1)/4⌋,
+the 111 and 135 bits for an 8-byte frame that response-time analysis uses.
+Both are printed because real traffic lies between them. Next to the measured
+load stands the nominal load the DBC's cycle times predict, which is a
+consistency check between the network definition and the firmware: 4.00 %
+measured against 4.00 % nominal. The busiest 100 ms window is reported
+separately from the average because bursts, not averages, decide whether a
+low-priority message meets its deadline; the echo probes make the difference
+visible (7.4 % peak against 5.5 % average).
+
+**Period and jitter.** The period is the time between consecutive frames of one
+identifier. "Jitter" has no single definition, so three are reported: the
+standard deviation, the 99th percentile of the period, and the peak deviation
+from the nominal period; gaps longer than three periods are counted apart,
+because on a desktop OS they mean the sending process was not scheduled (the
+same classification the demos use for their inconclusive verdict). The means
+came out within 0.01 ms of nominal in both recorded runs, because the ECUs'
+timers run in simulated time and the simulator keeps simulated time aligned
+with host time over the long run; the spread is the host: a standard deviation
+of 0.10 ms in one run and 0.43 ms in another a few minutes earlier, with a
+worst SENSOR_DATA period of 10.53 ms and 11.43 ms respectively. That is why the
+pass criteria of the verified run bound the mean (within 5 %) and the rate
+(within 10 %) but not the jitter: a fixed jitter bound would be a statement
+about the laptop.
+
+**Echo round trip.** The host sends `ECHO_REQUEST` with an 8-bit `seq` and a
+32-bit payload unique to the run, and each addressed ECU answers with its own
+response identifier carrying the same pair, so a response matches exactly one
+request even after `seq` wraps. The round trip is the difference of two kernel
+timestamps on the same interface, the request as it reached the bus and the
+response as it did, so the probe's own send latency never enters; the probe
+sees its own request because its socket receives own messages. The samples are
+taken twice, by the probe live and by the analysis from the recording, and
+agree to the microsecond. The responses also carry the ECU's turnaround, its
+receive-to-transmit time in microseconds, meant to separate ECU processing from
+the rest of the path.
+
+On `native_sim` that field is 0 in every response, and the reason explains the
+whole distribution. The simulator executes firmware code in zero simulated time
+(`k_cycle_get_32()` returns the simulated clock, `nsi_hws_get_time()`), so the
+ECU's processing between dequeuing the request and calling transmit takes no
+time at all by its own clock. What takes time is the simulator's CAN driver:
+`drivers/can/can_native_linux.c` polls its socket with a zero-timeout `select()`
+and then sleeps one simulated millisecond ("short sleep required to avoid
+blocking the whole native process"), so a request waits between 0 and 1 ms for
+the next poll, then crosses the receive queue to the RX thread and is answered
+with a `write()` on the socket. A median of 0.54 to 0.72 ms and a 99th
+percentile of 1.2 to 2.2 ms is that poll interval plus host scheduling. For
+comparison, the Phase 3 gateway, a Python process on the same host, relays a
+frame in 0.13 ms median. On the Nucleo the same probe would measure the two
+frames' bus time (95 and 103 bits, about 0.2 ms each at 500 kbit/s) plus a real
+interrupt-to-thread-to-transmit path, and the turnaround field would come from
+the cycle counter. The analysis prints a note when it finds all turnarounds
+zero, so the number is never mistaken for an ECU that answers instantly.
+
+### 13.5 How the tools were verified on vcan
+
+`tools/record_and_analyze.py` is the Phase 4 counterpart of the Phase 2 demos:
+both ECUs on `vcan0`, the logger and the table decoder running as separate
+processes exactly as a user would start them, 200 probes to both ECUs, both
+shells queried, then the analysis of the recording. It passes only if the rates
+and mean periods are nominal, the recording has no protection fault, the
+periodic load matches the DBC within 10 %, each ECU answered at least 95 % of
+the probes with a median round trip under 5 ms, and each ECU's own
+`echo_responses` counter equals the number of its responses matched in the
+recording. That last check closes the loop between three independent
+observers: the ECU's counter, the probe's live matching and the analysis of the
+logger's file. Two runs with different seeds are recorded in `RESULTS.md`
+section 1 and `docs/phase-logs/phase4.md`; the CI job runs the same command.
+
+### 13.6 Measured results (simulated bus on a desktop OS)
+
+From `tools/record_and_analyze.py --seed 2` (run 2 in `RESULTS.md`), 200
+probes, 8 s of traffic; run 1 in parentheses where it differs.
+
+| Measurement | Result |
+|---|---|
+| Bus load at 500 kbit/s, periodic messages | 4.00 % measured, 4.00 % nominal from the DBC (4.86 % with worst-case stuffing) |
+| Bus load with the echo probes | 5.51 % average (6.69 % worst-case stuffing), busiest 100 ms window 7.42 % (7.67 %) |
+| SENSOR_DATA period, nominal 10 ms | mean 10.001 ms, std 0.101 (0.428), min 9.50 (8.38), max 10.53 (11.43), p99 10.25 (11.17), peak deviation 0.53 ms (1.62), no gap |
+| CONTROLLER_COMMAND period, nominal 20 ms | mean 20.001 ms, std 0.078 (0.472), max 20.32 (21.35), p99 20.26 (21.26), peak deviation 0.32 ms (1.72) |
+| 100 ms messages (battery, two heartbeats) | means within 0.01 ms of nominal, std 0.26–0.29 ms (0.33–0.59), peak deviation ≤ 1.03 ms (≤ 2.09) |
+| Echo round trip, sensor ECU | 200 of 200 answered; min 0.031, p50 0.544, p90 1.018, p99 1.155, max 1.187 ms (p50 0.710, p99 2.220, max 4.821) |
+| Echo round trip, controller ECU | 200 of 200 answered; min 0.044, p50 0.582, p90 1.029, p99 1.195, max 1.204 ms (p50 0.723, p99 2.166, max 2.248) |
+| ECU turnaround | 0 µs in every response (zero simulated time on `native_sim`) |
+| Protection | 1440 protected frames, 0 DLC/CRC/counter faults; `echo_responses=200` on both ECUs, equal to the matched responses |
+
+### 13.7 What Phase 4 taught
+
+The only timing numbers in this project that say something about the firmware
+are the ones defined by the firmware's own clocks: the 35 ms timeout, the
+500 ms recovery hold, the 300 ms liveness window, the 1000 ms watchdog, all of
+which Phases 2 and 3 measured as designed. Frame spacing and round-trip latency
+on `native_sim` characterise the host's timer and scheduler and the simulator's
+1 ms driver poll, and they change from one run to the next; the tooling labels
+them accordingly, and the pass criteria avoid them. The same tools on the
+Nucleo would report firmware numbers, which is the point of building them on
+python-can rather than on anything simulator-specific.
+
+Library behaviour is part of the measurement chain. python-can's direction
+flag means something else on `vcan` than on a real adapter, and its log writer
+emits a format the project's own readers did not accept; both were found by
+reading the first recording, not by the unit tests, which had passed on the
+virtual interface. A verified run on the real topology remains the test that
+counts for tooling, as it was for the firmware.

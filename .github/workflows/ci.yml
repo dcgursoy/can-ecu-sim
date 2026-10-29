@@ -90,8 +90,8 @@ jobs:
       - name: Generated code matches can/network.dbc
         run: tools/dev.sh tools/gen-all.sh --check
 
-      - name: Python reference implementation and gateway fault-engine tests
-        run: tools/dev.sh python3 -m pytest -q can/ gateway/
+      - name: Python unit tests, reference implementation, gateway fault engine, host tools
+        run: tools/dev.sh python3 -m pytest -q can/ gateway/ host/
 
       - name: Host unit tests with coverage (protocol + ecu_core libraries)
         run: tools/dev.sh tools/run-host-tests.sh build/host-tests
@@ -129,6 +129,9 @@ jobs:
 
       - name: Fault-injection scenarios through the gateway (vcan0 <-> vcan1) and the firmware hooks
         run: tools/dev.sh python3 tools/fault_scenarios.py --retries 2
+
+      - name: Host tools on vcan, logger, live decoder and echo probes, analysis of the recording
+        run: tools/dev.sh python3 tools/record_and_analyze.py --retries 2
 
       - name: Upload build artifacts
         if: always()

@@ -34,7 +34,9 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 PLAIN_RE = re.compile(
     r"^\s*(?:\(\d+\.\d+\)\s+)?\S+\s+([0-9A-Fa-f]{3,8})\s+\[(\d+)\]\s*((?:[0-9A-Fa-f]{2}\s*)*)$")
 # "(1700000000.123456) vcan0 200#A102030405060708"          candump -L / -l log format
-LOG_RE = re.compile(r"^\((\d+\.\d+)\)\s+\S+\s+([0-9A-Fa-f]{3,8})#([0-9A-Fa-f]*)$")
+# "(1700000000.123456) vcan0 200#A102030405060708 R"        same, with the direction marker newer
+#                                                           can-utils and python-can append
+LOG_RE = re.compile(r"^\((\d+\.\d+)\)\s+\S+\s+([0-9A-Fa-f]{3,8})#([0-9A-Fa-f]*)(?:\s+[RT])?$")
 
 
 def parse_line(line: str):

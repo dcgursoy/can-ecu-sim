@@ -72,6 +72,14 @@ minute later and `nm` shows both symbols. The script now re-reads the image
 for up to three seconds before failing, which covers a momentarily incoherent
 file on Docker Desktop's bind mount without weakening the check.
 
+*Corrected in Phase 4:* the file was never incoherent. The check piped the
+symbol table into `grep -q` under `set -o pipefail`; `grep -q` exits at the
+first match and the writer can die of SIGPIPE, so a healthy image fails the
+test on a loaded host (reproduced 26 times in 2000 tries under CPU load, and
+once more in the first CI run). The test now reads the whole symbol table
+(`grep -c`) and the retry loop is gone; see
+[phase4.md](phase4.md#6-the-first-ci-run-and-the-allocator-check).
+
 ## 4. Fault scenarios on the gateway topology, seed 1
 
 Run on the firmware after the review fixes of section 6.

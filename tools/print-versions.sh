@@ -26,3 +26,5 @@ echo "clang-tidy:   $(clang-tidy --version | grep -i version | head -1 | sed 's/
 echo "cppcheck:     $(cppcheck --version)"
 echo "gcovr:        $(gcovr --version | head -1)"
 echo "lcov:         $(lcov --version | head -1)"
+echo "matplotlib:   $(python3 -c 'import matplotlib; print(matplotlib.__version__)')"
+echo "agg:          $(agg --version)"

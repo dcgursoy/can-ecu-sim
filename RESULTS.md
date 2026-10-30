@@ -39,6 +39,17 @@ in the same container image. The runs:
 | E | `tools/dev.sh tools/static-analysis.sh` | 2026-10-29, Phase 6 code, commit `8d34d3e` | [docs/phase-logs/phase6.md](docs/phase-logs/phase6.md) section 3 | the "Static analysis" step of every CI run since |
 | F | `tools/dev.sh tools/build-rust.sh` | 2026-10-29, Phase 7 code, commit `8472b9b` | [docs/phase-logs/phase7.md](docs/phase-logs/phase7.md) section 2 | the "Rust sensor ECU" step of every CI run since |
 | G | the CI job itself, `.github/workflows/ci.yml` on a push to `main` | 2026-10-29, commit `aa1c495` | [docs/phase-logs/phase7.md](docs/phase-logs/phase7.md) section 5 | every later run |
+| H | `tools/dev.sh tools/record-demo.sh --publish` (the demo, recorded) | 2026-10-30, the Phase 8 addendum commit | `docs/figures/demo.gif`; its capture drives `docs/figures/fault-timeline.svg` | the "Demo recording" step of every CI run since, uploaded as `demo-and-figures` |
+
+The figures of the README (`docs/figures/*.svg`, drawn by `tools/dev.sh python3
+tools/plots.py`; each footer names its capture): `fault-timeline.svg` from run
+H's capture; `watchdog-timeline.svg` and `period-histograms.svg` from the
+`test_heartbeat_loss` and `test_periodic_timing` captures of the local results
+directories, the C++ one a run of the suite on 2026-10-29 at 05:59 UTC (the
+verification run of the harness fix, commit `aa1c495`) and the Rust one run D;
+`echo-rtt.svg` from the local `record_and_analyze.py` run of 2026-10-29 at
+01:04 UTC (2040 frames, the Phase 6 code). CI redraws all four from its own
+run's captures (`demo-and-figures` artifact).
 
 Every row of the README table, in its order:
 

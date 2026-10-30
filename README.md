@@ -59,6 +59,20 @@ gateway, the host tools and the test suite observe and disturb the network from
 outside, through the same bus. The Rust sensor takes the C++ sensor's place
 without any change to the controller, the gateway or the tests.
 
+## Demo
+
+![Both ECUs start on vcan0; the bus is decoded and verified; the sensor withholds its heartbeat for 600 ms; the controller's command goes SAFE_STATE 350 ms after the last heartbeat and NORMAL 500 ms after the first one again; the controller's log and status](docs/figures/demo.gif)
+
+Ten seconds of the real thing, recorded at a terminal in the dev container
+(`tools/dev.sh tools/record-demo.sh`; the demo alone is `tools/dev.sh python3
+tools/demo.py`): both ECUs boot on `vcan0`, the bus is decoded and every
+protected frame's CRC verified against the Python reference, then the sensor
+is told to withhold its heartbeat for 600 ms through the firmware's own test
+hook, and the controller's reaction is read live off the bus: the SAFE_STATE
+command after the 350 ms heartbeat timeout, the NORMAL command after the
+500 ms recovery hold, then the controller's log and `ecu status`. The same
+scenario is drawn from the same capture in the first figure below.
+
 ## What is here
 
 - `can/network.dbc` the network: sensor data (10 ms), battery status (100 ms),
@@ -116,7 +130,9 @@ without any change to the controller, the gateway or the tests.
   recorded run with the host tools (`record_and_analyze.py`), the system
   suite runner, the static analysis (clang-tidy over the application as both
   builds compile it, cppcheck over the libraries, every finding an error),
-  and the Docker Desktop on Windows `vcan` fix (`tools/wsl2/`).
+  the demo and its recorder (`demo.py`, `record_cast.py`, `record-demo.sh`),
+  the figures (`plots.py`), and the Docker Desktop on Windows `vcan` fix
+  (`tools/wsl2/`).
 - `rust/` the sensor ECU a second time, in Rust: `sensor-core`, a `no_std`,
   allocation-free crate holding the generated codec, the protection scheme,
   the six state machines ported with their unit tests and the sensor
@@ -137,6 +153,39 @@ without any change to the controller, the gateway or the tests.
   ([DESIGN.md §15](DESIGN.md#15-phase-6-continuous-integration)).
 
 ## Results
+
+### Figures
+
+Drawn by `tools/dev.sh python3 tools/plots.py` from the captures the runs
+leave behind (kernel receive timestamps of the `vcan` interface); each
+footer names its capture. All of it is a simulated bus on a desktop OS.
+
+![Heartbeat loss timeline: the sensor's heartbeat stops for about 700 ms, the controller's command goes SAFE_STATE after the 350 ms timeout and NORMAL 500 ms after the first heartbeat again](docs/figures/fault-timeline.svg)
+
+*The demo's scenario from its capture: `SENSOR_DATA` keeps flowing, the
+heartbeat stops, the controller's command goes `SAFE_STATE` after the 350 ms
+timeout and back to `NORMAL` 500 ms after the heartbeat's return.*
+
+![Stalled transmit thread and watchdog reset, C++ sensor and Rust sensor: about 1.3 s without SENSOR_DATA, the controller in its safe state meanwhile, NORMAL again after the rebooted sensor's first heartbeat and the hold](docs/figures/watchdog-timeline.svg)
+
+*The watchdog scenario of the system suite, C++ sensor above and Rust sensor
+below: the transmit thread is blocked, the supervisor stops feeding the
+watchdog once the thread is 300 ms stale, the watchdog resets the node after
+another second, the rebooted sensor is accepted and the controller leaves its
+safe state after the hold.*
+
+![Period histograms: SENSOR_DATA from the C++ and the Rust sensor and CONTROLLER_COMMAND from the C++ controller, on a logarithmic count axis](docs/figures/period-histograms.svg)
+
+*Transmit periods under the suite. The firmware's scheduler is exact; the
+spread is the host's scheduling and, for the C++ sensor, the simulator's 1 ms
+driver poll, which the Rust sensor does not have.*
+
+![Echo round-trip histograms for the sensor and the controller ECU, host to ECU and back, from the recorded run of the host tools](docs/figures/echo-rtt.svg)
+
+*Echo round trips from `host.echo`: a request from the host, the ECU's receive
+thread answering, the answer back at the host, timed from kernel timestamps.*
+
+### Table
 
 Every number is **measured on a simulated bus (Linux `vcan`) on a desktop OS,
 not on real-time hardware**, and comes from the command in its row;
@@ -355,6 +404,25 @@ Windows/Linux only.
    tools/dev.sh tools/run-system-tests.sh --results build/test-results-rust --sensor-exe rust/target/release/sensor-vcan
    ```
 
+10. **Run the demo, record it, draw the figures.** The demo alone narrates the
+    heartbeat-loss scenario at the terminal in about ten seconds; the recorder
+    runs it under a pseudo-terminal, writes an asciicast and renders the GIF
+    with `agg` (`--publish` replaces `docs/figures/demo.gif`); the plot script
+    draws the four figures of the README from the captures of steps 5, 8, 9
+    and the demo (`--publish`-free: it writes `docs/figures/*.svg` directly):
+
+    ```bash
+    tools/dev.sh python3 tools/demo.py
+    ```
+
+    ```bash
+    tools/dev.sh tools/record-demo.sh --publish
+    ```
+
+    ```bash
+    tools/dev.sh python3 tools/plots.py
+    ```
+
 To poke around interactively, `tools/dev.sh` with no arguments opens a shell in
 the container; inside it `tools/vcan-up.sh` creates `vcan0` and `vcan1`, then
 `build/native_sim_sensor/zephyr/zephyr.exe --can-if=vcan0 &` (or the Rust
@@ -375,7 +443,7 @@ can/             network.dbc, generators,   gateway/             fault-injection
                  Python reference           host/                logger, decoder, echo probe, analysis
 tools/           wrappers, vcan, demos      tests/               system test suite (pytest, seven groups)
 docs/            fault model, phase logs,   rust/                Rust sensor ECU: no_std core, vcan adapter
-                 toolchain versions
+                 figures, toolchain versions
 DESIGN.md        every decision and why     RESULTS.md           raw data behind the numbers above
 ```
 

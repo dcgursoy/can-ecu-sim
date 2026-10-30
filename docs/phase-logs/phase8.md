@@ -66,3 +66,48 @@ drawn. The same source was also rendered by an independent service
 (mermaid.ink, which answers a bad diagram with an error): an SVG of 1923 by
 593 units with the nine nodes, the one cluster, thirteen edges and every
 label present.
+
+## 4. Addendum: the demo recording and the figures
+
+Added on 2026-10-30 after the question "is there a final demo or visual":
+`tools/demo.py` (the narrated heartbeat-loss scenario), `tools/record_cast.py`
+and `tools/record-demo.sh` (the recording under a pseudo-terminal and the
+GIF), `tools/plots.py` (the four figures), `docs/figures/`, the README's
+Demo and Figures sections, DESIGN.md section 17.6, RESULTS.md section 0 (run
+H and the figures' sources), a CI step that regenerates all of it from the
+run's own captures and uploads it, and two tools in the image (matplotlib
+3.11, `agg` 1.9.0 with its SHA-256 pinned, plus the DejaVu font `agg` needs),
+appended as a late Dockerfile layer so the Zephyr and Rust layers stayed
+cached (the local rebuild took the new layer only).
+
+What was checked:
+
+- **The demo narrates the capture, not a script.** Its first run (`--fast`,
+  no pauses) printed the boot times, the five rates, the decoded values, a
+  CRC check of 180 protected frames, and the four events of the fault with
+  their intervals (365 and 524 ms against the suite's 374.8 and 513.9 ms of
+  the same scenario, within one command period), the controller's log lines
+  and its status with `safe_state_entries=1` and one heartbeat timeout.
+- **The recording.** The first attempt failed on the recorder's own argument
+  parsing (`argparse.REMAINDER` swallowed the recorder's options); fixed by
+  splitting the command line at `--` by hand. The cast holds 19 output
+  events over 7.9 s; `agg` renders 14 frames at 110 by 36 cells, 316 KB. Two
+  frames and the last one were extracted with Pillow and read: the colours,
+  the values and the wrapping are as intended (two long event lines were
+  shortened after the first recording wrapped them).
+- **The figures.** Each PNG copy was read after drawing. The watchdog figure's
+  first version picked the module's longest `SENSOR_DATA` gap, which is the
+  killed-and-restarted sensor's 1533 ms, not the watchdog's; it is anchored on
+  the `STALL_THREAD` command now and reads 1312 ms (C++) and 1323 ms (Rust),
+  the suite's 1313.2 and 1323.3 ms. The heartbeat-loss figure reads the
+  recorded demo's own intervals (its footer names the capture), within a
+  command period of the suite's; the period histograms give the suite's
+  numbers (C++ std 0.068 ms, Rust 0.045 ms on these captures); the echo
+  figure matches RESULTS.md section 1 (p50 0.55 and 0.58 ms, p99 1.15 and
+  1.20 ms, 200 of 200 answered by each ECU). One annotation overlapped a row
+  label and was moved; thin tick marks that looked two-coloured in the PNG
+  were an anti-aliasing artefact of 0.6 px lines, drawn at 1 px now.
+- **Links and numbers.** The link checker passes on the 64 relative links
+  (the five new image links among them); the README table is unchanged and
+  its 33 rows still trace.
+- The CI run of this addendum is recorded in the commit that follows.

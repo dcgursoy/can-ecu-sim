@@ -166,6 +166,14 @@ jobs:
       - name: System test suite against the Rust sensor ECU (cross-language conformance)
         run: tools/dev.sh tools/run-system-tests.sh --results build/test-results-rust --sensor-exe rust/target/release/sensor-vcan
 
+      # The README's demo and figures, regenerated from this run's own captures so
+      # they cannot rot: the demo recorded under a pseudo-terminal and rendered to
+      # a GIF by agg, the four figures drawn by matplotlib (uploaded, not committed).
+      - name: Demo recording (GIF) and figures from this run's captures
+        run: |
+          tools/dev.sh tools/record-demo.sh --out build/demo
+          tools/dev.sh python3 tools/plots.py --out build/figures --png build/figures
+
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -220,6 +228,16 @@ jobs:
         with:
           name: test-results-rust
           path: build/test-results-rust/
+          if-no-files-found: warn
+
+      - name: Upload the demo recording and the figures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-and-figures
+          path: |
+            build/demo/
+            build/figures/
           if-no-files-found: warn
 
       # The run page gets the numbers: test counts of every suite, the coverage

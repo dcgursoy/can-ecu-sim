@@ -6,3 +6,5 @@ pytest>=8,<9
 pytest-timeout>=2.3,<3
 pyyaml>=6,<7
 gcovr>=7,<9
+# matplotlib (the figures, tools/plots.py) is installed by a later layer of the
+# Dockerfile so that the Zephyr and Rust layers stay cached; see .devcontainer/Dockerfile.

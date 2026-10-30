@@ -103,5 +103,23 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
         --target thumbv7em-none-eabihf \
         --component clippy,rustfmt
 
+# --- Figures and the demo recording (Phase 8 addendum) ----------------------------
+# matplotlib draws the figures in docs/figures (tools/plots.py); agg renders the
+# recorded demo (tools/record-demo.sh) to a GIF and needs one monospace font on
+# the system. Appended as a late layer so the Zephyr and Rust layers above stay
+# cached; the pinned binary is checked against its SHA-256.
+ARG AGG_VERSION=1.9.0
+ARG AGG_SHA256=ddcbf6ca044c8ac3a434dcb9ee89fb9e3be87209982b7c2adb55f782e8f0f390
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -sSfL -o /usr/local/bin/agg \
+        "https://github.com/asciinema/agg/releases/download/v${AGG_VERSION}/agg-x86_64-unknown-linux-musl" \
+    && echo "${AGG_SHA256}  /usr/local/bin/agg" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/agg
+USER ${USERNAME}
+RUN pip install --no-cache-dir "matplotlib>=3.9,<4"
+
 WORKDIR /workspaces/can-ecu-sim
 CMD ["/bin/bash"]

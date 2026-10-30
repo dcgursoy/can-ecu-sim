@@ -110,4 +110,10 @@ What was checked:
 - **Links and numbers.** The link checker passes on the 64 relative links
   (the five new image links among them); the README table is unchanged and
   its 33 rows still trace.
-- The CI run of this addendum is recorded in the commit that follows.
+- **The CI run of the addendum**, commit `9163adc`
+  ([41024544832](https://github.com/dcgursoy/can-ecu-sim/actions/runs/41024544832)):
+  all 35 steps passed in 14 min 37 s. The image build took 4 min 34 s, the
+  new layer (the font, `agg`, matplotlib) being built once on the runner; the
+  new step, the demo recorded under a pseudo-terminal and the four figures
+  drawn from the run's own captures, took 11 s, and its `demo-and-figures`
+  artifact holds the runner's cast, GIF, capture and figures.

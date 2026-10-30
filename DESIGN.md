@@ -2042,6 +2042,7 @@ was claimed; each is the next thing to do if the project continued.
 | `8472b9b` | 7 | 40824884673 | failed in the C++ system suite (a floating-point comparison at a limit in the harness; fixed in `aa1c495`) | 11 min 10 s |
 | `aa1c495` | 7, harness fix | 40826567803 | passed, 33 steps | 12 min 12 s |
 | `1d54d38` | 8 | 40901551354 | passed, 33 steps | 10 min 39 s |
+| `9163adc` | 8, the demo and the figures | 41024544832 | passed, 35 steps | 14 min 37 s |
 
 The two failures were both in the tooling that judges the firmware, not in
 the firmware, and both were found by CI on a machine other than the one the

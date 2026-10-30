@@ -102,6 +102,7 @@ followed a phase, are not listed):
 | `8472b9b`, Phase 7 | [40824884673](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40824884673) | failed in the C++ system suite: a floating-point difference of two timestamps compared against a limit it equalled (phase7.md section 5) | 33 | 11 min 10 s |
 | `aa1c495`, the harness fix | [40826567803](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40826567803) | passed | 33 | 12 min 12 s |
 | `1d54d38`, Phase 8 | [40901551354](https://github.com/dcgursoy/can-ecu-sim/actions/runs/40901551354) | passed | 33 | 10 min 39 s |
+| `9163adc`, the demo and the figures | [41024544832](https://github.com/dcgursoy/can-ecu-sim/actions/runs/41024544832) | passed | 35 | 14 min 37 s (a new image layer) |
 
 ## 1. Phase 4: recording of the plain-bus network with the host tools
 

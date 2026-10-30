@@ -176,7 +176,7 @@ jobs:
 
       - name: Upload build artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: firmware-builds
           path: |
@@ -190,7 +190,7 @@ jobs:
 
       - name: Upload host unit test report and coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: host-tests
           path: |
@@ -200,7 +200,7 @@ jobs:
 
       - name: Upload static analysis reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: static-analysis
           path: build/static-analysis/
@@ -208,7 +208,7 @@ jobs:
 
       - name: Upload network logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: network-logs
           path: build/network-logs/
@@ -216,7 +216,7 @@ jobs:
 
       - name: Upload test results (JUnit of every suite, measurements, logs, firmware coverage)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results
           path: build/test-results/
@@ -224,7 +224,7 @@ jobs:
 
       - name: Upload test results of the run against the Rust sensor ECU
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results-rust
           path: build/test-results-rust/
@@ -232,7 +232,7 @@ jobs:
 
       - name: Upload the demo recording and the figures
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: demo-and-figures
           path: |
